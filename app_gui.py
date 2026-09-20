@@ -8,7 +8,7 @@ import os
 class MasterMobileApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("نظام الكاشير وإدارة المحل الاحترافي")
+        self.title("نظام الهاواتف مركز هشام كيوان")
         self.geometry("1300x780")
         
         self.is_dark_mode = True
@@ -372,7 +372,7 @@ class MasterMobileApp(tk.Tk):
 
             if not dev['is_sold']:
                 tk.Label(card, text="الحالة بالمخزن: متاح للبيع ✅", bg=self.COLOR_CARD, fg=self.COLOR_ACCENT, font=("Segoe UI", 12, "bold")).pack(pady=10)
-                tk.Button(card, text="🛒 فتح شاشة البيع الاحترافية", command=lambda: open_sale_popup(dev), bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 12, "bold"), padx=20, pady=8, relief="flat", cursor="hand2").pack(pady=10)
+                tk.Button(card, text="🛒 فتح شاشة البيع ", command=lambda: open_sale_popup(dev), bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 12, "bold"), padx=20, pady=8, relief="flat", cursor="hand2").pack(pady=10)
             else:
                 tk.Label(card, text=f"الحالة بالمخزن: مباع للعميل ({dev['customer_name']}) ❌ - بسعر بيع: {dev['sell_price']} ج.م", bg=self.COLOR_CARD, fg=self.COLOR_DANGER, font=("Segoe UI", 12, "bold")).pack(pady=10)
                 tk.Button(card, text="🔄 عمل مرتجع وإرجاعه للمخزن", command=lambda: do_return(dev['id']), bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 11, "bold"), padx=15, pady=6, relief="flat", cursor="hand2").pack(pady=10)
@@ -382,7 +382,7 @@ class MasterMobileApp(tk.Tk):
 
         def open_sale_popup(dev):
             pop = tk.Toplevel(self)
-            pop.title("شاشة البيع الاحترافية")
+            pop.title("شاشة البيع")
             pop.geometry("480x550")
             pop.configure(bg=self.COLOR_CARD)
             pop.grab_set()
