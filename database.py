@@ -3,7 +3,7 @@ from psycopg2.extras import RealDictCursor
 import bcrypt
 
 class DatabaseManager:
-    def __init__(self, host="localhost", database="mobile_store_db_v1", user="postgres", password="yousef1312012", port=5432):
+    def __init__(self, host="192.168.1.10", database="mobile_store_db_v1", user="postgres", password="password", port=5432):
         self.conn_params = {
             "host": host, "database": database,
             "user": user, "password": password, "port": port
