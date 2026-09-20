@@ -26,7 +26,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile app_gui.py
+        pyinstaller --onefile --hidden-import=psycopg2 app_gui.py
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
