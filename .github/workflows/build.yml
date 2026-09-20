@@ -2,7 +2,7 @@ name: Build and Release EXE
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "app_gui" ]
 
 jobs:
   build:
