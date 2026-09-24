@@ -8,12 +8,14 @@ CONFIG_FILE = "config.json"
 
 def load_db_config():
     default_config = {
-        "host": "localhost",
-        "database": "mobile_store_db_v1",
-        "user": "postgres",
-        "password": "yousef1312012",
-        "port": 5432
-    }
+            # "host": "localhost",
+            "host": "192.168.1.10",
+            "database": "mobile_store_db_v1",
+            "user": "postgres",
+            # "password": "yousef1312012",
+            "password": "password",
+            "port": 5432
+        }
     if not os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
