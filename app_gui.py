@@ -5,22 +5,40 @@ from invoice_generator import generate_invoice_image
 from datetime import datetime
 from PIL import Image, ImageTk
 import os
+import json
+
+# قاموس ترجمة الصلاحيات للعرض باللغة العربية في الواجهة
+PERMISSIONS_DICT = {
+    'can_view_buy_price': 'رؤية سعر الشراء والتكلفة',
+    'can_manage_inventory': 'إدارة المخزون (إضافة/حذف أجهزة وموردين)',
+    'can_manage_users': 'إدارة المستخدمين والصلاحيات بالكامل',
+    'can_view_reports': 'عرض التقارير والسيولة والأرباح',
+    'can_process_returns': 'إجراء مرتجعات المبيعات',
+    'can_edit_prices': 'تعديل أسعار البيع والخصومات'
+}
+
+def fix_bidi(text):
+    """منع تشوه النصوص المشتركة بين العربية والإنجليزي والأرقام."""
+    if text is None:
+        return ""
+    s = str(text)
+    return f"\u200f{s}\u200f"
 
 def fmt_curr(val):
     try:
         f = float(val)
-        return f"{f:,.2f} ج.م"
+        return f"\u200f{f:,.2f} ج.م\u200f"
     except (ValueError, TypeError):
-        return "0.00 ج.م"
+        return "\u200f0.00 ج.م\u200f"
 
 def fmt_num(val):
     try:
         f = float(val)
         if f.is_integer():
-            return f"{int(f):,}"
-        return f"{f:,.2f}"
+            return f"\u200f{int(f):,}\u200f"
+        return f"\u200f{f:,.2f}\u200f"
     except (ValueError, TypeError):
-        return str(val)
+        return f"\u200f{str(val)}\u200f"
 
 class MasterMobileApp(tk.Tk):
     def __init__(self):
@@ -72,7 +90,6 @@ class MasterMobileApp(tk.Tk):
             return False
         perms = self.current_user.get('permissions', {})
         if isinstance(perms, str):
-            import json
             try: perms = json.loads(perms)
             except: perms = {}
         return perms.get(perm_key, True)
@@ -245,6 +262,7 @@ class MasterMobileApp(tk.Tk):
             widget.destroy()
 
     def bind_treeview_double_click(self, tree, target_column_name="ID"):
+        """ربط النقر المزدوج في أي جدول لعرض التفاصيل الشاملة للجهاز بصورة آمنة RTL."""
         def on_double_click(event):
             selected = tree.selection()
             if not selected:
@@ -254,17 +272,22 @@ class MasterMobileApp(tk.Tk):
                 return
 
             cols = list(tree['columns'])
-            idx = 0
-            if target_column_name in cols:
-                idx = cols.index(target_column_name)
-            elif "ID الجهاز" in cols:
-                idx = cols.index("ID الجهاز")
+            idx = -1
+            for search_col in [target_column_name, "ID الجهاز", "ID", "رقم الفاتورة"]:
+                if search_col in cols:
+                    idx = cols.index(search_col)
+                    break
+
+            if idx == -1:
+                idx = 0
 
             if idx < len(item_vals):
-                dev_id = item_vals[idx]
+                dev_id_raw = item_vals[idx]
                 try:
-                    dev_id_clean = int(str(dev_id).replace('#', '').strip())
-                    self.show_device_details_modal(dev_id_clean)
+                    dev_id_str = str(dev_id_raw).replace('#', '').strip()
+                    if dev_id_str.isdigit():
+                        dev_id_clean = int(dev_id_str)
+                        self.show_device_details_modal(dev_id_clean)
                 except ValueError:
                     pass
 
@@ -288,8 +311,8 @@ class MasterMobileApp(tk.Tk):
 
         header = tk.Frame(dwin, bg=self.COLOR_TOPBAR, pady=12)
         header.pack(fill="x")
-        tk.Label(header, text=f"📱 بيانات الجهاز التفصيلية: {dev['category']} {dev['model']} (ID: #{dev['id']})", 
-                 font=("Segoe UI", 14, "bold"), bg=self.COLOR_TOPBAR, fg=self.COLOR_BLUE).pack()
+        title_txt = fix_bidi(f"📱 بيانات الجهاز التفصيلية: {dev['category']} {dev['model']} (ID: #{dev['id']})")
+        tk.Label(header, text=title_txt, font=("Segoe UI", 14, "bold"), bg=self.COLOR_TOPBAR, fg=self.COLOR_BLUE).pack()
 
         main_scroll = tk.Frame(dwin, bg=self.COLOR_BG, padx=20, pady=15)
         main_scroll.pack(fill="both", expand=True)
@@ -304,11 +327,11 @@ class MasterMobileApp(tk.Tk):
         ram_str = dev['ram'] if dev['ram'] else "لا يوجد"
 
         info_grid1 = [
-            (f"السيريال / IMEI: {dev['imei_serial']}", f"الماركة / الفئة: {dev['category']}"),
-            (f"الموديل: {dev['model']}", f"المساحة / الرام: {dev['storage']} / {ram_str}"),
-            (f"نسبة البطارية: {bat_str}", f"سعر الشراء: {buy_p_str}"),
-            (f"المورد: {dev['supplier_name']}", f"تاريخ الشراء: {dev['buy_date_formatted']}"),
-            (f"بواسطة المستخدم: {dev['created_by_name']}", f"الحالة الحالية: {'مباع 🔴' if dev['is_sold'] else 'بالمخزن 🟢'}")
+            (fix_bidi(f"السيريال / IMEI: {dev['imei_serial']}"), fix_bidi(f"الماركة / الفئة: {dev['category']}")),
+            (fix_bidi(f"الموديل: {dev['model']}"), fix_bidi(f"المساحة / الرام: {dev['storage']} / {ram_str}")),
+            (fix_bidi(f"نسبة البطارية: {bat_str}"), fix_bidi(f"سعر الشراء: {buy_p_str}")),
+            (fix_bidi(f"المورد: {dev['supplier_name']}"), fix_bidi(f"تاريخ الشراء: {dev['buy_date_formatted']}")),
+            (fix_bidi(f"بواسطة المستخدم: {dev['created_by_name']}"), fix_bidi(f"الحالة الحالية: {'مباع 🔴' if dev['is_sold'] else 'بالمخزن 🟢'}"))
         ]
 
         for r_idx, (c1, c2) in enumerate(info_grid1):
@@ -323,11 +346,11 @@ class MasterMobileApp(tk.Tk):
         if sale:
             net_p_str = fmt_curr(sale['net_profit']) if can_see_cost else "***"
             info_grid2 = [
-                (f"رقم الفاتورة: #{sale['id']}", f"اسم العميل: {sale['customer_name']}"),
-                (f"هاتف العميل: {sale['customer_phone'] or '-'}", f"سعر البيع: {fmt_curr(sale['sell_price'])}"),
-                (f"المدفوع: {fmt_curr(sale['cash_received'])}", f"المتبقي (الآجل): {fmt_curr(sale['remaining_balance'])}"),
-                (f"صافي الربح: {net_p_str}", f"تاريخ البيع: {sale['sell_date_formatted']}"),
-                (f"المستلم / البائع: {sale['seller_name']}", f"حالة الدفع: {sale['payment_status']}")
+                (fix_bidi(f"رقم الفاتورة: #{sale['id']}"), fix_bidi(f"اسم العميل: {sale['customer_name']}")),
+                (fix_bidi(f"هاتف العميل: {sale['customer_phone'] or '-'}"), fix_bidi(f"سعر البيع: {fmt_curr(sale['sell_price'])}")),
+                (fix_bidi(f"المدفوع: {fmt_curr(sale['cash_received'])}"), fix_bidi(f"المتبقي (الآجل): {fmt_curr(sale['remaining_balance'])}")),
+                (fix_bidi(f"صافي الربح: {net_p_str}"), fix_bidi(f"تاريخ البيع: {sale['sell_date_formatted']}")),
+                (fix_bidi(f"المستلم / البائع: {sale['seller_name']}"), fix_bidi(f"حالة الدفع: {sale['payment_status']}"))
             ]
             for r_idx, (c1, c2) in enumerate(info_grid2):
                 tk.Label(card2, text=c1, font=("Segoe UI", 10), bg=self.COLOR_CARD, fg=self.COLOR_TEXT, anchor="e").grid(row=r_idx, column=1, sticky="ew", padx=10, pady=3)
@@ -341,7 +364,7 @@ class MasterMobileApp(tk.Tk):
             card3 = tk.LabelFrame(main_scroll, text="💳 سجل التحصيلات والسدادات", bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"), padx=10, pady=5)
             card3.pack(fill="both", expand=True, pady=8)
 
-            cols = ("تاريخ الدفعة", "المبلغ المدفوع", "المستلم")
+            cols = ("المستلم", "المبلغ المدفوع", "تاريخ الدفعة")
             ptree = ttk.Treeview(card3, columns=cols, show="headings", height=4)
             for c in cols:
                 ptree.heading(c, text=c)
@@ -349,82 +372,145 @@ class MasterMobileApp(tk.Tk):
             ptree.pack(fill="both", expand=True)
 
             for p in payments:
-                ptree.insert("", "end", values=(p['payment_date_formatted'], fmt_curr(p['payment_amount']), p['receiver_name']))
+                ptree.insert("", "end", values=(p['receiver_name'], fmt_curr(p['payment_amount']), p['payment_date_formatted']))
 
     def view_user_management(self):
+        """إدارة المستخدمين والصلاحيات مع عرضها باللغة العربية وتحسين التعديل."""
         self.current_view_func = self.view_user_management
         self.clear_content()
 
-        tk.Label(self.content_frame, text="إدارة المستخدمين والصلاحيات", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(pady=10)
+        tk.Label(self.content_frame, text="👥 إدارة المستخدمين والصلاحيات", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(pady=10)
 
-        columns = ("ID", "اسم المستخدم", "الاسم الكامل", "الحالة")
+        columns = ("الحالة", "الاسم الكامل", "اسم المستخدم", "ID")
         tree = ttk.Treeview(self.content_frame, columns=columns, show="headings", height=8)
         for col in columns:
             tree.heading(col, text=col)
-            tree.column(col, width=120, anchor="center")
+            tree.column(col, width=140, anchor="center")
         tree.pack(fill="x", padx=15, pady=5)
 
         def load_users():
             for r in tree.get_children(): tree.delete(r)
             users = self.db.get_all_users()
             for u in users:
-                st = "نشط" if u['is_active'] else "معطل"
-                tree.insert("", "end", values=(u['id'], u['username'], u['full_name'], st))
+                st = "نشط 🟢" if u['is_active'] else "معطل 🔴"
+                tree.insert("", "end", values=(st, u['full_name'], u['username'], u['id']))
 
         load_users()
 
         btn_bar = tk.Frame(self.content_frame, bg=self.COLOR_BG)
-        btn_bar.pack(pady=10)
+        btn_bar.pack(pady=15)
 
-        def open_add_user():
+        def open_user_dialog(user_data=None):
+            is_edit = user_data is not None
             uwin = tk.Toplevel(self)
-            uwin.title("إضافة مستخدم جديد")
-            uwin.geometry("400x500")
+            uwin.title("تعديل مستخدم" if is_edit else "إضافة مستخدم جديد")
+            uwin.geometry("450x560")
             uwin.configure(bg=self.COLOR_CARD)
+            uwin.grab_set()
 
-            tk.Label(uwin, text="اسم المستخدم:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(pady=5)
-            e_uname = tk.Entry(uwin, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT)
-            e_uname.pack(pady=5)
+            title_txt = "✏️ تعديل بيانات وصلاحيات المستخدم" if is_edit else "➕ إضافة مستخدم جديد"
+            tk.Label(uwin, text=title_txt, font=("Segoe UI", 13, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_BLUE).pack(pady=10)
 
-            tk.Label(uwin, text="كلمة المرور:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(pady=5)
-            e_pass = tk.Entry(uwin, show="*", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT)
-            e_pass.pack(pady=5)
+            form = tk.Frame(uwin, bg=self.COLOR_CARD, padx=15)
+            form.pack(fill="both", expand=True)
 
-            tk.Label(uwin, text="الاسم الكامل:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(pady=5)
-            e_fname = tk.Entry(uwin, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT)
-            e_fname.pack(pady=5)
+            tk.Label(form, text="اسم المستخدم (Login):", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).pack(anchor="e", pady=(5, 1))
+            e_uname = tk.Entry(form, font=("Segoe UI", 10), justify="center", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+            if is_edit:
+                e_uname.insert(0, user_data['username'])
+                e_uname.config(state="disabled")
+            e_uname.pack(fill="x", pady=3)
 
-            tk.Label(uwin, text="الصلاحيات:", bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold")).pack(pady=5)
-            perms_vars = {
-                'can_view_buy_price': tk.BooleanVar(value=True),
-                'can_manage_inventory': tk.BooleanVar(value=False),
-                'can_manage_users': tk.BooleanVar(value=False),
-                'can_view_reports': tk.BooleanVar(value=False),
-                'can_process_returns': tk.BooleanVar(value=False),
-                'can_edit_prices': tk.BooleanVar(value=True)
-            }
-            for k, v in perms_vars.items():
-                tk.Checkbutton(uwin, text=k, variable=v, bg=self.COLOR_CARD, fg=self.COLOR_TEXT, selectcolor=self.COLOR_CARD).pack(anchor="w", padx=40)
+            pass_label_txt = "كلمة المرور الجديدة (اتركها فارغة للتعديل بدون تغيير):" if is_edit else "كلمة المرور:"
+            tk.Label(form, text=pass_label_txt, bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).pack(anchor="e", pady=(5, 1))
+            e_pass = tk.Entry(form, show="*", font=("Segoe UI", 10), justify="center", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+            e_pass.pack(fill="x", pady=3)
 
-            def save_u():
+            tk.Label(form, text="الاسم الكامل:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).pack(anchor="e", pady=(5, 1))
+            e_fname = tk.Entry(form, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+            if is_edit:
+                e_fname.insert(0, user_data['full_name'])
+            e_fname.pack(fill="x", pady=3)
+
+            tk.Label(form, text="🔒 الصلاحيات الممنوحة للمستخدم:", bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold")).pack(anchor="e", pady=(10, 5))
+
+            current_perms = {}
+            if is_edit:
+                p_raw = user_data.get('permissions', {})
+                if isinstance(p_raw, str):
+                    try: current_perms = json.loads(p_raw)
+                    except: current_perms = {}
+                else:
+                    current_perms = p_raw or {}
+
+            perms_vars = {}
+            for perm_key, ar_label in PERMISSIONS_DICT.items():
+                default_val = current_perms.get(perm_key, True if not is_edit and perm_key in ['can_view_buy_price', 'can_edit_prices'] else False)
+                var = tk.BooleanVar(value=default_val)
+                perms_vars[perm_key] = var
+                cb = tk.Checkbutton(form, text=fix_bidi(ar_label), variable=var, bg=self.COLOR_CARD, fg=self.COLOR_TEXT, selectcolor=self.COLOR_CARD, font=("Segoe UI", 10), anchor="w")
+                cb.pack(fill="x", pady=2)
+
+            # التنقل بزر Enter
+            if not is_edit:
+                e_uname.bind("<Return>", lambda e: e_pass.focus())
+            e_pass.bind("<Return>", lambda e: e_fname.focus())
+
+            def save_user_action():
+                username = e_uname.get().strip()
+                password = e_pass.get().strip()
+                fullname = e_fname.get().strip()
+
+                if not is_edit and (not username or not password or not fullname):
+                    messagebox.showwarning("تنبيه", "برجاء استكمال كافة البيانات الأساسية!")
+                    return
+
+                if is_edit and not fullname:
+                    messagebox.showwarning("تنبيه", "برجاء إدخال الاسم الكامل!")
+                    return
+
                 p_dict = {k: v.get() for k, v in perms_vars.items()}
-                self.db.add_user(e_uname.get().strip(), e_pass.get().strip(), e_fname.get().strip(), p_dict)
-                messagebox.showinfo("تم", "تم إضافة المستخدم بنجاح!")
+
+                if is_edit:
+                    self.db.update_user(user_data['id'], fullname, p_dict, password if password else None)
+                    messagebox.showinfo("تم", "تم تحديث بيانات وصلاحيات المستخدم بنجاح!")
+                else:
+                    self.db.add_user(username, password, fullname, p_dict)
+                    messagebox.showinfo("تم", "تم إضافة المستخدم الجديد بنجاح!")
+
                 uwin.destroy()
                 load_users()
 
-            tk.Button(uwin, text="حفظ", command=save_u, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold")).pack(pady=15)
+            e_fname.bind("<Return>", lambda e: save_user_action())
+            tk.Button(uwin, text="💾 حفظ البيانات", command=save_user_action, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 11, "bold"), pady=5, cursor="hand2").pack(pady=12)
 
-        def delete_u():
+        def edit_selected_user():
             sel = tree.selection()
-            if not sel: return
-            uid = tree.item(sel[0])['values'][0]
-            if messagebox.askyesno("تأكيد", "هل تريد تعطيل هذا المستخدم؟"):
-                self.db.delete_user(uid)
+            if not sel:
+                messagebox.showwarning("تنبيه", "يرجى تحديد مستخدم لتعديله!")
+                return
+            uid = tree.item(sel[0])['values'][3]
+            users = self.db.get_all_users()
+            target_u = next((u for u in users if u['id'] == uid), None)
+            if target_u:
+                open_user_dialog(target_u)
+
+        def toggle_user_status():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showwarning("تنبيه", "يرجى تحديد مستخدم!")
+                return
+            uid = tree.item(sel[0])['values'][3]
+            if uid == self.current_user['id']:
+                messagebox.showwarning("تنبيه", "لا يمكنك تعطيل حسابك الحالي أثناء تسجيل الدخول!")
+                return
+            if messagebox.askyesno("تأكيد", "هل تريد تغيير حالة تفعيل/تعطيل هذا المستخدم؟"):
+                self.db.toggle_user_active(uid)
                 load_users()
 
-        tk.Button(btn_bar, text="➕ إضافة مستخدم", command=open_add_user, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold")).pack(side="right", padx=5)
-        tk.Button(btn_bar, text="❌ تعطيل مستخدم", command=delete_u, bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 10, "bold")).pack(side="right", padx=5)
+        tk.Button(btn_bar, text="➕ إضافة مستخدم جديد", command=lambda: open_user_dialog(), bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right", padx=5)
+        tk.Button(btn_bar, text="✏️ تعديل المستخدم والصلاحيات", command=edit_selected_user, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right", padx=5)
+        tk.Button(btn_bar, text="🔄 تفعيل/تعطيل الحساب", command=toggle_user_status, bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right", padx=5)
 
     def view_inventory(self):
         self.current_view_func = self.view_inventory
@@ -433,15 +519,16 @@ class MasterMobileApp(tk.Tk):
         top_frame = tk.Frame(self.content_frame, bg=self.COLOR_BG)
         top_frame.pack(fill="x", padx=15, pady=10)
 
-        tk.Label(top_frame, text="الأجهزة المتاحة بالمخزون", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(side="right")
+        tk.Label(top_frame, text="📦 الأجهزة المتاحة بالمخزون", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(side="right")
 
         search_entry = tk.Entry(top_frame, font=("Segoe UI", 10), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
         search_entry.pack(side="left", padx=5)
         def filter_inv(e=None): load_tree(search_entry.get().strip())
         search_entry.bind("<Return>", filter_inv)
-        tk.Button(top_frame, text="بحث", command=filter_inv, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Button(top_frame, text="بحث", command=filter_inv, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="left")
 
-        columns = ("ID", "تاريخ الشراء", "المورد", "سعر الشراء", "السيريال / IMEI", "البطارية", "الرامات", "المساحة", "الموديل", "النوع")
+        # ترتيب الجدول RTL
+        columns = ("النوع", "الموديل", "المساحة", "الرامات", "البطارية", "السيريال / IMEI", "سعر الشراء", "المورد", "تاريخ الشراء", "ID")
         tree = ttk.Treeview(self.content_frame, columns=columns, show="headings")
 
         for col in columns:
@@ -459,9 +546,9 @@ class MasterMobileApp(tk.Tk):
                 buy_p = fmt_curr(d['buy_price']) if can_see else "***"
                 bat_str = f"{d['battery_health']}%" if d['battery_health'] else "لا يوجد"
                 ram_str = d['ram'] if d['ram'] else "لا يوجد"
-                tree.insert("", "end", values=(d['id'], d['buy_date_formatted'], d['supplier_name'], 
-                                              buy_p, d['imei_serial'], bat_str, 
-                                              ram_str, d['storage'], d['model'], d['category']))
+                tree.insert("", "end", values=(d['category'], d['model'], d['storage'], 
+                                              ram_str, bat_str, d['imei_serial'], 
+                                              buy_p, d['supplier_name'], d['buy_date_formatted'], d['id']))
 
         load_tree()
 
@@ -472,21 +559,22 @@ class MasterMobileApp(tk.Tk):
             def delete_dev():
                 sel = tree.selection()
                 if not sel: return
-                dev_id = tree.item(sel[0])['values'][0]
+                dev_id = tree.item(sel[0])['values'][9]
                 if messagebox.askyesno("تأكيد", "حذف الجهاز المحدد نهائياً من المخزون؟"):
                     self.db.delete_device(dev_id)
                     load_tree()
 
-            tk.Button(act_bar, text="🗑️ حذف الجهاز", command=delete_dev, bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 9, "bold")).pack(side="right", padx=5)
+            tk.Button(act_bar, text="🗑️ حذف الجهاز", command=delete_dev, bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right", padx=5)
 
         stat_bar = tk.Frame(self.content_frame, bg=self.COLOR_TOPBAR, height=45)
         stat_bar.pack(fill="x", side="bottom")
 
         overview = self.db.get_capital_statistics()
-        info_text = f"إجمالي الأجهزة المتاحة: {fmt_num(overview['total_devices'])} جهاز  |  رأس المال بالمخزن: {fmt_curr(overview['total_capital'])}"
+        info_text = fix_bidi(f"إجمالي الأجهزة المتاحة: {fmt_num(overview['total_devices'])} جهاز  |  رأس المال بالمخزن: {fmt_curr(overview['total_capital'])}")
         tk.Label(stat_bar, text=info_text, bg=self.COLOR_TOPBAR, fg=self.COLOR_ACCENT, font=("Segoe UI", 11, "bold")).pack(pady=8)
 
     def view_search_sale(self):
+        """شاشة البيع السريع بعرض متباين جداً وتنفيذ سريع بضغط زر Enter."""
         self.current_view_func = self.view_search_sale
         self.clear_content()
 
@@ -495,13 +583,13 @@ class MasterMobileApp(tk.Tk):
         search_bar = tk.Frame(self.content_frame, bg=self.COLOR_BG)
         search_bar.pack(pady=5)
 
-        tk.Label(search_bar, text="امسح الباركود أو أدخل IMEI / ID أو الموديل:", bg=self.COLOR_BG, fg=self.COLOR_TEXT, font=("Segoe UI", 11)).pack(side="right", padx=5)
-        search_entry = tk.Entry(search_bar, font=("Segoe UI", 12), width=25, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+        tk.Label(search_bar, text="امسح الباركود أو أدخل IMEI / ID / الموديل:", bg=self.COLOR_BG, fg=self.COLOR_TEXT, font=("Segoe UI", 11, "bold")).pack(side="right", padx=5)
+        search_entry = tk.Entry(search_bar, font=("Segoe UI", 12), width=30, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
         search_entry.pack(side="right", padx=5)
         search_entry.focus()
 
-        card = tk.Frame(self.content_frame, bg=self.COLOR_CARD, padx=25, pady=25)
-        card.pack(pady=10, fill="both", expand=True, padx=40)
+        card = tk.Frame(self.content_frame, bg=self.COLOR_CARD, padx=20, pady=20, highlightthickness=1, highlightbackground=self.COLOR_TOPBAR)
+        card.pack(pady=10, fill="both", expand=True, padx=30)
 
         def perform_search(event=None):
             for widget in card.winfo_children(): widget.destroy()
@@ -510,32 +598,58 @@ class MasterMobileApp(tk.Tk):
 
             dev = self.db.search_device_by_imei_or_id(q)
             if not dev:
-                tk.Label(card, text="❌ لم يتم العثور على أي جهاز بهذا البحث!", bg=self.COLOR_CARD, fg=self.COLOR_DANGER, font=("Segoe UI", 12, "bold")).pack()
+                tk.Label(card, text="❌ لم يتم العثور على أي جهاز بهذا البحث!", bg=self.COLOR_CARD, fg=self.COLOR_DANGER, font=("Segoe UI", 13, "bold")).pack(pady=20)
                 return
 
             buy_p_str = fmt_curr(dev['buy_price']) if self.has_permission('can_view_buy_price') else "***"
             bat_str = f"{dev['battery_health']}%" if dev['battery_health'] else "لا يوجد"
             ram_str = dev['ram'] if dev['ram'] else "لا يوجد"
 
-            info_frame = tk.Frame(card, bg=self.COLOR_CARD)
-            info_frame.pack(fill="x", pady=5)
+            # كارت متباين جداً لمعلومات الجهاز
+            info_header = tk.Frame(card, bg=self.COLOR_TOPBAR, padx=15, pady=10)
+            info_header.pack(fill="x", pady=(0, 10))
 
-            tk.Label(info_frame, text=f"📱 الجهاز: {dev['category']} {dev['model']}", font=("Segoe UI", 14, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_BLUE, anchor="e").pack(fill="x", pady=3)
-            tk.Label(info_frame, text=f"🔹 المساحة: {dev['storage']} | الرامات: {ram_str} | البطارية: {bat_str}", font=("Segoe UI", 11), bg=self.COLOR_CARD, fg=self.COLOR_TEXT, anchor="e").pack(fill="x", pady=2)
-            tk.Label(info_frame, text=f"🔢 السيريال IMEI: {dev['imei_serial']} | رقم التتبع ID: #{dev['id']}", font=("Segoe UI", 11), bg=self.COLOR_CARD, fg=self.COLOR_TEXT, anchor="e").pack(fill="x", pady=2)
-            tk.Label(info_frame, text=f"💰 سعر الشراء: {buy_p_str} | المورد: {dev['supplier_name']} | تاريخ الشراء: {dev.get('buy_date_formatted', '-')}", font=("Segoe UI", 11), bg=self.COLOR_CARD, fg=self.COLOR_MUTED, anchor="e").pack(fill="x", pady=2)
+            dev_title = fix_bidi(f"📱 {dev['category']} {dev['model']} (ID: #{dev['id']})")
+            tk.Label(info_header, text=dev_title, font=("Segoe UI", 15, "bold"), bg=self.COLOR_TOPBAR, fg=self.COLOR_BLUE).pack(side="right")
+
+            st_badge = "🔴 مباع" if dev['is_sold'] else "🟢 متاح بالمخزن"
+            st_color = self.COLOR_DANGER if dev['is_sold'] else self.COLOR_ACCENT
+            tk.Label(info_header, text=st_badge, font=("Segoe UI", 11, "bold"), bg=self.COLOR_CARD, fg=st_color, padx=10, pady=3).pack(side="left")
+
+            specs_box = tk.Frame(card, bg=self.COLOR_CARD)
+            specs_box.pack(fill="x", pady=5)
+
+            specs = [
+                ("الماركة / الفئة", dev['category']),
+                ("الموديل", dev['model']),
+                ("المساحة / الرام", f"{dev['storage']} / {ram_str}"),
+                ("نسبة البطارية", bat_str),
+                ("السيريال IMEI", dev['imei_serial']),
+                ("سعر الشراء والتكلفة", buy_p_str),
+                ("المورد", dev['supplier_name']),
+                ("تاريخ الشراء", dev.get('buy_date_formatted', '-'))
+            ]
+
+            for idx, (lbl, val) in enumerate(specs):
+                r, c = divmod(idx, 2)
+                f_item = tk.Frame(specs_box, bg=self.COLOR_ENTRY_BG, padx=10, pady=6)
+                f_item.grid(row=r, column=1-c, sticky="ew", padx=5, pady=4)
+                tk.Label(f_item, text=fix_bidi(f"{lbl}:"), font=("Segoe UI", 10), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_MUTED).pack(side="right", padx=2)
+                tk.Label(f_item, text=fix_bidi(val), font=("Segoe UI", 10, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT).pack(side="right", padx=5)
+                specs_box.grid_columnconfigure(0, weight=1)
+                specs_box.grid_columnconfigure(1, weight=1)
 
             if not dev['is_sold']:
-                sale_box = tk.Frame(card, bg=self.COLOR_CARD, pady=15)
-                sale_box.pack(fill="x", pady=10)
+                sale_box = tk.LabelFrame(card, text="💳 تفاصيل البيع والعميل", bg=self.COLOR_CARD, fg=self.COLOR_ACCENT, font=("Segoe UI", 11, "bold"), padx=15, pady=10)
+                sale_box.pack(fill="x", pady=15)
 
-                tk.Label(sale_box, text="السعر الاتفاقي (البيع):", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=3, sticky="e", padx=5, pady=5)
-                e_price = tk.Entry(sale_box, justify="right", font=("Segoe UI", 11), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
+                tk.Label(sale_box, text="سعر البيع الاتفاقي:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=3, sticky="e", padx=5, pady=5)
+                e_price = tk.Entry(sale_box, justify="right", font=("Segoe UI", 11, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
                 e_price.grid(row=0, column=2, padx=5, pady=5, sticky="w")
                 e_price.focus()
 
-                tk.Label(sale_box, text="المدفوع نقداً:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="e", padx=5, pady=5)
-                e_paid = tk.Entry(sale_box, justify="right", font=("Segoe UI", 11), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
+                tk.Label(sale_box, text="المدفوع نقداً (كاش):", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="e", padx=5, pady=5)
+                e_paid = tk.Entry(sale_box, justify="right", font=("Segoe UI", 11, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
                 e_paid.insert(0, "0")
                 e_paid.grid(row=0, column=0, padx=5, pady=5, sticky="w")
 
@@ -547,9 +661,10 @@ class MasterMobileApp(tk.Tk):
                 e_cphone = tk.Entry(sale_box, justify="right", font=("Segoe UI", 11), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
                 e_cphone.grid(row=1, column=0, padx=5, pady=5, sticky="w")
 
-                lbl_rem = tk.Label(sale_box, text="المتبقي (الآجل على العميل): 0.00 ج.م", font=("Segoe UI", 12, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_DANGER)
-                lbl_rem.grid(row=2, column=0, columnspan=4, pady=15)
+                lbl_rem = tk.Label(sale_box, text="المتبقي (الآجل): 0.00 ج.م", font=("Segoe UI", 12, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_DANGER)
+                lbl_rem.grid(row=2, column=0, columnspan=4, pady=10)
 
+                # التنقل المباشر بزر Enter
                 e_price.bind("<Return>", lambda e: e_paid.focus())
                 e_paid.bind("<Return>", lambda e: e_cname.focus())
                 e_cname.bind("<Return>", lambda e: e_cphone.focus())
@@ -561,11 +676,11 @@ class MasterMobileApp(tk.Tk):
                         paid = float(e_paid.get().strip() or 0)
                         rem = max(0.0, price - paid)
                         if price < float(dev['buy_price']):
-                            lbl_rem.config(text=f"⚠️ تحذير: سعر البيع أقل من سعر الشراء ({fmt_curr(dev['buy_price'])})!", fg=self.COLOR_DANGER)
+                            lbl_rem.config(text=fix_bidi(f"⚠️ تحذير: سعر البيع أقل من سعر الشراء ({fmt_curr(dev['buy_price'])})!"), fg=self.COLOR_DANGER)
                         elif rem > 0:
-                            lbl_rem.config(text=f"⚠️ لم يتم السداد بالكامل! المتبقي (آجل): {fmt_curr(rem)}", fg=self.COLOR_DANGER)
+                            lbl_rem.config(text=fix_bidi(f"⚠️ لم يتم السداد بالكامل! المتبقي (آجل): {fmt_curr(rem)}"), fg=self.COLOR_DANGER)
                         else:
-                            lbl_rem.config(text="✅ تم السداد بالكامل", fg=self.COLOR_ACCENT)
+                            lbl_rem.config(text="✅ تم السداد بالكامل نقداً", fg=self.COLOR_ACCENT)
                     except ValueError:
                         pass
 
@@ -585,7 +700,7 @@ class MasterMobileApp(tk.Tk):
                         buy_p = float(dev['buy_price'])
 
                         if price < buy_p:
-                            messagebox.showerror("خطأ في البيع", f"مينفعش يبقى سعر البيع أقل من سعر الشراء ({fmt_curr(buy_p)})!")
+                            messagebox.showerror("خطأ في البيع", fix_bidi(f"مينفعش يبقى سعر البيع أقل من سعر الشراء ({fmt_curr(buy_p)})!"))
                             return
 
                         paid = float(e_paid.get().strip() or 0)
@@ -620,9 +735,9 @@ class MasterMobileApp(tk.Tk):
                     except Exception as ex:
                         messagebox.showerror("خطأ", str(ex))
 
-                tk.Button(card, text="💾 تأكيد البيع وطباعة الفاتورة", command=do_confirm_sale, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 11, "bold"), pady=6, cursor="hand2").pack(pady=10)
+                tk.Button(card, text="💾 تأكيد البيع وطباعة الفاتورة (Enter)", command=do_confirm_sale, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 11, "bold"), pady=6, cursor="hand2").pack(pady=10)
             else:
-                tk.Label(card, text=f"الحالة: مباع للعميل ({dev['customer_name']})", bg=self.COLOR_CARD, fg=self.COLOR_DANGER, font=("Segoe UI", 12, "bold")).pack(pady=10)
+                tk.Label(card, text=fix_bidi(f"الحالة: مباع للعميل ({dev['customer_name']})"), bg=self.COLOR_CARD, fg=self.COLOR_DANGER, font=("Segoe UI", 12, "bold")).pack(pady=10)
                 if self.has_permission('can_process_returns'):
                     def do_return():
                         if messagebox.askyesno("تأكيد", "إجراء مرتجع للجهاز وإرجاعه للمخزون؟"):
@@ -632,108 +747,126 @@ class MasterMobileApp(tk.Tk):
                     tk.Button(card, text="🔄 إجراء مرتجع", command=do_return, bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(pady=5)
 
         search_entry.bind("<Return>", perform_search)
-        tk.Button(search_bar, text="بحث", command=perform_search, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 10, "bold")).pack(side="right")
+        tk.Button(search_bar, text="بحث", command=perform_search, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right")
 
     def view_buy(self):
+        """شاشة شراء وتنظيم إدخال الأجهزة أكثر سهولة وسلاسة."""
         self.current_view_func = self.view_buy
         self.clear_content()
-        tk.Label(self.content_frame, text="تسجيل جهاز جديد في المخزون", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(pady=15)
 
-        form = tk.Frame(self.content_frame, bg=self.COLOR_CARD, padx=25, pady=25)
-        form.pack(pady=10)
+        tk.Label(self.content_frame, text="🛒 تسجيل جهاز جديد في المخزون (إدخال شراء)", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(pady=12)
 
-        labels = ["الماركة (النوع):", "الموديل:", "المساحة:", "الرامات:", "نسبة البطارية:", "السيريال / IMEI:", "سعر الشراء:", "المورد:"]
-        self.buy_entries = {}
+        main_box = tk.Frame(self.content_frame, bg=self.COLOR_BG)
+        main_box.pack(pady=5)
+
+        # قسم مواصفات الجهاز
+        sec1 = tk.LabelFrame(main_box, text="📱 مواصفات وتفاصيل الجهاز", bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"), padx=20, pady=15)
+        sec1.pack(fill="x", pady=5)
+
+        # قسم سعر الشراء والمورد
+        sec2 = tk.LabelFrame(main_box, text="💰 بيانات الشراء والمورد", bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"), padx=20, pady=15)
+        sec2.pack(fill="x", pady=10)
 
         suppliers = self.db.get_all_suppliers()
 
-        entries_list = []
+        # عناصر حقول مواصفات الجهاز
+        tk.Label(sec1, text="الماركة (النوع):", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10)).grid(row=0, column=3, sticky="e", padx=8, pady=6)
+        e_cat = tk.Entry(sec1, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+        e_cat.grid(row=0, column=2, padx=8, pady=6)
+        e_cat.focus()
 
-        for i, text in enumerate(labels):
-            row, col = divmod(i, 2)
-            tk.Label(form, text=text, bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10)).grid(row=row*2, column=col*2, sticky="e", padx=10, pady=5)
+        tk.Label(sec1, text="الموديل:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10)).grid(row=0, column=1, sticky="e", padx=8, pady=6)
+        e_model = tk.Entry(sec1, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+        e_model.grid(row=0, column=0, padx=8, pady=6)
+
+        tk.Label(sec1, text="المساحة:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10)).grid(row=1, column=3, sticky="e", padx=8, pady=6)
+        e_storage = tk.Entry(sec1, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+        e_storage.grid(row=1, column=2, padx=8, pady=6)
+
+        tk.Label(sec1, text="الرامات:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10)).grid(row=1, column=1, sticky="e", padx=8, pady=6)
+        e_ram = tk.Entry(sec1, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+        e_ram.grid(row=1, column=0, padx=8, pady=6)
+
+        tk.Label(sec1, text="نسبة البطارية (%):", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10)).grid(row=2, column=3, sticky="e", padx=8, pady=6)
+        e_bat = tk.Entry(sec1, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
+        e_bat.grid(row=2, column=2, padx=8, pady=6)
+
+        tk.Label(sec1, text="السيريال / IMEI:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10)).grid(row=2, column=1, sticky="e", padx=8, pady=6)
+        e_imei = tk.Entry(sec1, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT)
+        e_imei.grid(row=2, column=0, padx=8, pady=6)
+
+        # عناصر حقول بيانات الشراء والمورد
+        tk.Label(sec2, text="سعر الشراء (ج.م):", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=3, sticky="e", padx=8, pady=6)
+        e_price = tk.Entry(sec2, font=("Segoe UI", 11, "bold"), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
+        e_price.grid(row=0, column=2, padx=8, pady=6)
+
+        tk.Label(sec2, text="اختيار المورد:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="e", padx=8, pady=6)
+        
+        supp_frame = tk.Frame(sec2, bg=self.COLOR_CARD)
+        supp_display_names = ["بدون مورد / شراء مباشر"] + [s['name'] for s in suppliers]
+        cb_supp = ttk.Combobox(supp_frame, values=supp_display_names, state="readonly", font=("Segoe UI", 10), width=20)
+        cb_supp.current(0)
+        cb_supp.pack(side="right", padx=2)
+
+        def add_new_supplier_popup():
+            ns_win = tk.Toplevel(self)
+            ns_win.title("إضافة مورد جديد")
+            ns_win.geometry("320x220")
+            ns_win.configure(bg=self.COLOR_CARD)
+            ns_win.grab_set()
+
+            tk.Label(ns_win, text="اسم المورد:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(pady=5)
+            n_entry = tk.Entry(ns_win, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, justify="right")
+            n_entry.pack(pady=5)
+            n_entry.focus()
             
-            if text == "المورد:":
-                supp_frame = tk.Frame(form, bg=self.COLOR_CARD)
-                
-                supp_display_names = ["بدون مورد / شراء مباشر"] + [s['name'] for s in suppliers]
-                cb = ttk.Combobox(supp_frame, values=supp_display_names, state="readonly", font=("Segoe UI", 10))
-                cb.current(0)
-                cb.pack(side="right", padx=2)
-                
-                def add_new_supplier_popup():
-                    ns_win = tk.Toplevel(self)
-                    ns_win.title("إضافة مورد جديد")
-                    ns_win.geometry("300x200")
-                    ns_win.configure(bg=self.COLOR_CARD)
-                    ns_win.grab_set()
+            tk.Label(ns_win, text="رقم الهاتف:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(pady=5)
+            p_entry = tk.Entry(ns_win, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, justify="right", validate="key", validatecommand=self.vcmd_num)
+            p_entry.pack(pady=5)
 
-                    tk.Label(ns_win, text="اسم المورد:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(pady=5)
-                    n_entry = tk.Entry(ns_win, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, justify="right")
-                    n_entry.pack(pady=5)
-                    n_entry.focus()
-                    
-                    tk.Label(ns_win, text="رقم الهاتف:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(pady=5)
-                    p_entry = tk.Entry(ns_win, bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, justify="right", validate="key", validatecommand=self.vcmd_num)
-                    p_entry.pack(pady=5)
+            n_entry.bind("<Return>", lambda e: p_entry.focus())
+            p_entry.bind("<Return>", lambda e: save_supp())
 
-                    n_entry.bind("<Return>", lambda e: p_entry.focus())
-                    p_entry.bind("<Return>", lambda e: save_supp())
+            def save_supp():
+                name = n_entry.get().strip()
+                phone = p_entry.get().strip()
+                if name:
+                    new_id = self.db.add_supplier(name, phone)
+                    nonlocal suppliers
+                    suppliers = self.db.get_all_suppliers()
+                    updated_display = ["بدون مورد / شراء مباشر"] + [s['name'] for s in suppliers]
+                    cb_supp['values'] = updated_display
+                    for idx, s in enumerate(suppliers):
+                        if s['id'] == new_id:
+                            cb_supp.current(idx + 1)
+                            break
+                    ns_win.destroy()
+            
+            tk.Button(ns_win, text="حفظ", command=save_supp, bg=self.COLOR_ACCENT, fg="white", cursor="hand2").pack(pady=10)
 
-                    def save_supp():
-                        name = n_entry.get().strip()
-                        phone = p_entry.get().strip()
-                        if name:
-                            new_id = self.db.add_supplier(name, phone)
-                            nonlocal suppliers
-                            suppliers = self.db.get_all_suppliers()
-                            updated_display = ["بدون مورد / شراء مباشر"] + [s['name'] for s in suppliers]
-                            cb['values'] = updated_display
-                            for idx, s in enumerate(suppliers):
-                                if s['id'] == new_id:
-                                    cb.current(idx + 1)
-                                    break
-                            ns_win.destroy()
-                    
-                    tk.Button(ns_win, text="حفظ", command=save_supp, bg=self.COLOR_ACCENT, fg="white").pack(pady=10)
+        tk.Button(supp_frame, text="+", command=add_new_supplier_popup, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right")
+        supp_frame.grid(row=0, column=0, padx=8, pady=6)
 
-                tk.Button(supp_frame, text="+", command=add_new_supplier_popup, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 9, "bold")).pack(side="right")
-                supp_frame.grid(row=row*2+1, column=col*2, padx=10, pady=5)
-                self.buy_entries['supplier_cb'] = cb
-            else:
-                extra_args = {}
-                if text in ["نسبة البطارية:", "سعر الشراء:"]:
-                    extra_args = {"validate": "key", "validatecommand": self.vcmd_num}
-
-                entry = tk.Entry(form, font=("Segoe UI", 10), justify="right", bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, **extra_args)
-                entry.grid(row=row*2+1, column=col*2, padx=10, pady=5)
-                self.buy_entries[text] = entry
-                entries_list.append(entry)
-
-        for idx_e in range(len(entries_list) - 1):
-            curr_e = entries_list[idx_e]
-            next_e = entries_list[idx_e + 1]
-            curr_e.bind("<Return>", lambda event, nxt=next_e: nxt.focus())
-
-        if entries_list:
-            entries_list[0].focus()
-
-        save_btn = tk.Button(self.content_frame, text="💾 حفظ وإدخال للمخزون", bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 11, "bold"), padx=25, pady=6, relief="flat", cursor="hand2")
-        save_btn.pack(pady=20)
-
-        if entries_list:
-            entries_list[-1].bind("<Return>", lambda e: save_device())
+        # التنقل بسلسلة مفتاح Enter
+        e_cat.bind("<Return>", lambda e: e_model.focus())
+        e_model.bind("<Return>", lambda e: e_storage.focus())
+        e_storage.bind("<Return>", lambda e: e_ram.focus())
+        e_ram.bind("<Return>", lambda e: e_bat.focus())
+        e_bat.bind("<Return>", lambda e: e_imei.focus())
+        e_imei.bind("<Return>", lambda e: e_price.focus())
+        e_price.bind("<Return>", lambda e: cb_supp.focus())
+        cb_supp.bind("<Return>", lambda e: save_device())
 
         def save_device():
             try:
-                cat = self.buy_entries["الماركة (النوع):"].get().strip()
-                model = self.buy_entries["الموديل:"].get().strip()
-                storage = self.buy_entries["المساحة:"].get().strip()
-                ram = self.buy_entries["الرامات:"].get().strip() or "لا يوجد"
-                bat_str = self.buy_entries["نسبة البطارية:"].get().strip()
+                cat = e_cat.get().strip()
+                model = e_model.get().strip()
+                storage = e_storage.get().strip()
+                ram = e_ram.get().strip() or "لا يوجد"
+                bat_str = e_bat.get().strip()
                 bat = int(bat_str) if bat_str.isdigit() else 0
-                imei = self.buy_entries["السيريال / IMEI:"].get().strip()
-                price_str = self.buy_entries["سعر الشراء:"].get().strip()
+                imei = e_imei.get().strip()
+                price_str = e_price.get().strip()
 
                 if not cat or not model or not imei or not price_str:
                     messagebox.showwarning("تنبيه", "برجاء إدخال الماركة والموديل والسيريال وسعر الشراء!")
@@ -741,8 +874,7 @@ class MasterMobileApp(tk.Tk):
 
                 price = float(price_str)
 
-                cb = self.buy_entries['supplier_cb']
-                curr_idx = cb.current()
+                curr_idx = cb_supp.current()
                 supp_id = None
                 if curr_idx > 0 and (curr_idx - 1) < len(suppliers):
                     supp_id = suppliers[curr_idx - 1]['id']
@@ -753,7 +885,7 @@ class MasterMobileApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("خطأ", str(e))
 
-        save_btn.config(command=save_device)
+        tk.Button(self.content_frame, text="💾 حفظ وإدخال للمخزون (Enter)", command=save_device, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 11, "bold"), padx=25, pady=6, relief="flat", cursor="hand2").pack(pady=15)
 
     def view_customer_debts(self):
         self.current_view_func = self.view_customer_debts
@@ -762,9 +894,9 @@ class MasterMobileApp(tk.Tk):
         top_frame = tk.Frame(self.content_frame, bg=self.COLOR_BG)
         top_frame.pack(fill="x", padx=15, pady=10)
 
-        tk.Label(top_frame, text="مستحقات وتأخيرات العملاء (الخرج)", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(side="right")
+        tk.Label(top_frame, text="💳 مستحقات وتأخيرات العملاء (الخرج)", font=("Segoe UI", 15, "bold"), bg=self.COLOR_BG, fg=self.COLOR_BLUE).pack(side="right")
 
-        columns = ("المتبقي", "المدفوع", "الإجمالي", "تاريخ البيع", "الهاتف", "اسم العميل", "الموديل", "ID الجهاز", "رقم الفاتورة")
+        columns = ("رقم الفاتورة", "ID الجهاز", "الموديل", "اسم العميل", "الهاتف", "تاريخ البيع", "الإجمالي", "المدفوع", "المتبقي")
         tree = ttk.Treeview(self.content_frame, columns=columns, show="headings")
         for col in columns:
             tree.heading(col, text=col)
@@ -776,17 +908,17 @@ class MasterMobileApp(tk.Tk):
             for row in tree.get_children(): tree.delete(row)
             debts = self.db.get_customer_debts()
             for d in debts:
-                tree.insert("", "end", values=(fmt_curr(d['remaining_balance']), fmt_curr(d['cash_received']), 
-                                              fmt_curr(d['sell_price']), d['sell_date_formatted'], 
-                                              d['customer_phone'], d['customer_name'], d['model'], 
-                                              d['device_id'], d['sale_id']))
+                tree.insert("", "end", values=(d['sale_id'], d['device_id'], d['model'],
+                                              d['customer_name'], d['customer_phone'], d['sell_date_formatted'],
+                                              fmt_curr(d['sell_price']), fmt_curr(d['cash_received']), 
+                                              fmt_curr(d['remaining_balance'])))
 
         load_debts()
 
         pay_frame = tk.Frame(self.content_frame, bg=self.COLOR_CARD, pady=10)
         pay_frame.pack(fill="x", padx=15, pady=10)
 
-        tk.Label(pay_frame, text="مبلغ التحصيل:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=5)
+        tk.Label(pay_frame, text="مبلغ التحصيل:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).pack(side="right", padx=5)
         amount_entry = tk.Entry(pay_frame, font=("Segoe UI", 10), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, validate="key", validatecommand=self.vcmd_num)
         amount_entry.pack(side="right", padx=5)
 
@@ -795,7 +927,7 @@ class MasterMobileApp(tk.Tk):
             if not selected: 
                 messagebox.showwarning("تنبيه", "يرجى تحديد عميل تحصل منه الدفعة!")
                 return
-            sale_id = tree.item(selected[0])['values'][8]
+            sale_id = tree.item(selected[0])['values'][0]
             try:
                 amt = float(amount_entry.get().strip())
                 self.db.pay_customer_debt(sale_id, amt, self.current_user['id'])
@@ -806,7 +938,7 @@ class MasterMobileApp(tk.Tk):
                 messagebox.showerror("خطأ", str(e))
 
         amount_entry.bind("<Return>", lambda e: pay_selected())
-        tk.Button(pay_frame, text="💵 تحصيل الدفعة", command=pay_selected, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold")).pack(side="right", padx=10)
+        tk.Button(pay_frame, text="💵 تحصيل الدفعة (Enter)", command=pay_selected, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right", padx=10)
 
     def view_supplier_debts(self):
         self.current_view_func = self.view_supplier_debts
@@ -821,7 +953,7 @@ class MasterMobileApp(tk.Tk):
         search_entry.pack(side="left", padx=5)
         def filter_inv(e=None): load_invoices()
         search_entry.bind("<Return>", filter_inv)
-        tk.Button(top_frame, text="بحث", command=filter_inv, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Button(top_frame, text="بحث", command=filter_inv, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="left")
 
         filter_frame = tk.Frame(top_frame, bg=self.COLOR_BG)
         filter_frame.pack(side="right", padx=20)
@@ -838,7 +970,7 @@ class MasterMobileApp(tk.Tk):
         inv_frame = tk.LabelFrame(tables_frame, text="📋 فواتير الموردين", bg=self.COLOR_BG, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"))
         inv_frame.pack(fill="both", expand=True, side="top", pady=5)
 
-        columns_inv = ("الحالة", "المتبقي", "المدفوع", "الإجمالي", "التاريخ", "اسم المورد", "رقم الفاتورة")
+        columns_inv = ("رقم الفاتورة", "اسم المورد", "التاريخ", "الإجمالي", "المدفوع", "المتبقي", "الحالة")
         tree_inv = ttk.Treeview(inv_frame, columns=columns_inv, show="headings", height=6)
         for col in columns_inv:
             tree_inv.heading(col, text=col)
@@ -848,7 +980,7 @@ class MasterMobileApp(tk.Tk):
         dev_frame = tk.LabelFrame(tables_frame, text="📱 تفاصيل الأجهزة بالفاتورة المختارة", bg=self.COLOR_BG, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"))
         dev_frame.pack(fill="both", expand=True, side="bottom", pady=5)
 
-        columns_dev = ("سعر الشراء", "السيريال / IMEI", "الموديل", "الماركة", "ID الجهاز")
+        columns_dev = ("ID الجهاز", "الماركة", "الموديل", "السيريال / IMEI", "سعر الشراء")
         tree_dev = ttk.Treeview(dev_frame, columns=columns_dev, show="headings", height=5)
         for col in columns_dev:
             tree_dev.heading(col, text=col)
@@ -864,20 +996,20 @@ class MasterMobileApp(tk.Tk):
             invs = self.db.get_supplier_invoices(q, st)
             for i in invs:
                 status_display = "تم السداد 🟢" if i['remaining_amount'] <= 0 else "غير مسدد 🔴"
-                tree_inv.insert("", "end", values=(status_display, fmt_curr(i['remaining_amount']), 
-                                                  fmt_curr(i['paid_amount']), fmt_curr(i['total_amount']), 
-                                                  i['inv_date'], i['supplier_name'], i['id']))
+                tree_inv.insert("", "end", values=(i['id'], i['supplier_name'], i['inv_date'],
+                                                  fmt_curr(i['total_amount']), fmt_curr(i['paid_amount']),
+                                                  fmt_curr(i['remaining_amount']), status_display))
 
         def on_invoice_select(event):
             for row in tree_dev.get_children(): tree_dev.delete(row)
             selected = tree_inv.selection()
             if not selected: return
-            inv_id = tree_inv.item(selected[0])['values'][6]
+            inv_id = tree_inv.item(selected[0])['values'][0]
             devices = self.db.get_invoice_devices(inv_id)
             can_see = self.has_permission('can_view_buy_price')
             for d in devices:
                 p_val = fmt_curr(d['buy_price']) if can_see else "***"
-                tree_dev.insert("", "end", values=(p_val, d['imei_serial'], d['model'], d['category'], d['id']))
+                tree_dev.insert("", "end", values=(d['id'], d['category'], d['model'], d['imei_serial'], p_val))
 
         tree_inv.bind("<<TreeviewSelect>>", on_invoice_select)
         load_invoices()
@@ -895,7 +1027,7 @@ class MasterMobileApp(tk.Tk):
                 messagebox.showwarning("تنبيه", "يرجى تحديد فاتورة لتسديد الدفعة لها أولاً!")
                 return
             inv_vals = tree_inv.item(selected[0])['values']
-            inv_id = inv_vals[6]
+            inv_id = inv_vals[0]
             try:
                 amt = float(pay_entry.get().strip())
                 if amt <= 0: raise ValueError
@@ -909,7 +1041,7 @@ class MasterMobileApp(tk.Tk):
                 messagebox.showerror("خطأ", str(e))
 
         pay_entry.bind("<Return>", lambda e: do_pay_supplier())
-        tk.Button(act_frame, text="💵 تسديد دفعة للمورد", command=do_pay_supplier, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right", padx=10)
+        tk.Button(act_frame, text="💵 تسديد دفعة للمورد (Enter)", command=do_pay_supplier, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right", padx=10)
 
         def open_print_options_popup():
             selected = tree_inv.selection()
@@ -918,7 +1050,7 @@ class MasterMobileApp(tk.Tk):
                 return
             
             inv_vals = tree_inv.item(selected[0])['values']
-            inv_id = inv_vals[6]
+            inv_id = inv_vals[0]
             
             p_win = tk.Toplevel(self)
             p_win.title("خيارات طباعة فاتورة المديونية")
@@ -954,14 +1086,14 @@ class MasterMobileApp(tk.Tk):
                 
                 inv_data = {
                     'sale_id': f"SUPP-{inv_id}",
-                    'customer_name': f"المورد: {inv_vals[5]}",
+                    'customer_name': f"المورد: {inv_vals[1]}",
                     'customer_phone': "-",
                     'device': first_dev,
                     'original_price': inv_vals[3],
                     'discount': 0.0,
                     'sell_price': inv_vals[3],
-                    'cash_received': inv_vals[2],
-                    'remaining_balance': inv_vals[1],
+                    'cash_received': inv_vals[4],
+                    'remaining_balance': inv_vals[5],
                     'custom_terms': custom_terms,
                     'print_style': selected_style
                 }
@@ -1060,7 +1192,7 @@ class MasterMobileApp(tk.Tk):
                 except ValueError:
                     messagebox.showerror("خطأ", "برجاء إدخال مبلغ صحيح!")
 
-            tk.Button(cap_win, text="حفظ السيولة", command=save_cap, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"), padx=15).pack(pady=15)
+            tk.Button(cap_win, text="حفظ السيولة", command=save_cap, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"), padx=15, cursor="hand2").pack(pady=15)
 
         tk.Button(act_fin_frame, text="➕ إضافة / تغذية سيولة مالية جديدة", command=open_add_capital_popup, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 11, "bold"), padx=15, pady=5, cursor="hand2").pack(side="right", padx=10)
         tk.Button(act_fin_frame, text="🔄 تحديث البيانات", command=refresh_fin_ui, bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 10, "bold"), padx=15, pady=5, cursor="hand2").pack(side="left", padx=10)
@@ -1090,9 +1222,9 @@ class MasterMobileApp(tk.Tk):
         e_to.pack(side="right", padx=5)
 
         can_see_cost = self.has_permission('can_view_buy_price')
-        cols = ("البائع", "التاريخ", "العميل", "الربح", "المتبقي", "النقدي", "البيع", "الشراء", "السيريال", "الموديل", "ID الجهاز")
+        cols = ("ID الجهاز", "الموديل", "السيريال", "الشراء", "البيع", "النقدي", "المتبقي", "الربح", "العميل", "التاريخ", "البائع")
         if not can_see_cost:
-            cols = ("البائع", "التاريخ", "العميل", "المتبقي", "النقدي", "البيع", "السيريال", "الموديل", "ID الجهاز")
+            cols = ("ID الجهاز", "الموديل", "السيريال", "البيع", "النقدي", "المتبقي", "العميل", "التاريخ", "البائع")
 
         tree = ttk.Treeview(tab_sales, columns=cols, show="headings")
         for col in cols:
@@ -1110,25 +1242,25 @@ class MasterMobileApp(tk.Tk):
             tot_s = sum(float(s['sell_price']) for s in sales)
             tot_p = sum(float(s['net_profit']) for s in sales)
 
-            lbl_tot_sales.config(text=f"إجمالي المبيعات: {fmt_curr(tot_s)}")
+            lbl_tot_sales.config(text=fix_bidi(f"إجمالي المبيعات: {fmt_curr(tot_s)}"))
             if can_see_cost:
-                lbl_tot_profit.config(text=f"صافي الأرباح: {fmt_curr(tot_p)}")
+                lbl_tot_profit.config(text=fix_bidi(f"صافي الأرباح: {fmt_curr(tot_p)}"))
             else:
                 lbl_tot_profit.config(text="صافي الأرباح: ***")
 
             for s in sales:
                 if can_see_cost:
-                    vals = (s['seller_name'], s['sell_date_formatted'], s['customer_name'], 
-                            fmt_curr(s['net_profit']), fmt_curr(s['remaining_balance']), 
-                            fmt_curr(s['cash_received']), fmt_curr(s['sell_price']), 
-                            fmt_curr(s['buy_price']), s['imei_serial'], s['model'], s['device_id'])
+                    vals = (s['device_id'], s['model'], s['imei_serial'],
+                            fmt_curr(s['buy_price']), fmt_curr(s['sell_price']),
+                            fmt_curr(s['cash_received']), fmt_curr(s['remaining_balance']),
+                            fmt_curr(s['net_profit']), s['customer_name'], s['sell_date_formatted'], s['seller_name'])
                 else:
-                    vals = (s['seller_name'], s['sell_date_formatted'], s['customer_name'], 
-                            fmt_curr(s['remaining_balance']), fmt_curr(s['cash_received']), 
-                            fmt_curr(s['sell_price']), s['imei_serial'], s['model'], s['device_id'])
+                    vals = (s['device_id'], s['model'], s['imei_serial'],
+                            fmt_curr(s['sell_price']), fmt_curr(s['cash_received']),
+                            fmt_curr(s['remaining_balance']), s['customer_name'], s['sell_date_formatted'], s['seller_name'])
                 tree.insert("", "end", values=vals)
 
-        tk.Button(filter_frame, text="تطبيق الفلترة", command=load_rep, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 9, "bold")).pack(side="right", padx=5)
+        tk.Button(filter_frame, text="تطبيق الفلترة", command=load_rep, bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right", padx=5)
         load_rep()
 
 if __name__ == "__main__":

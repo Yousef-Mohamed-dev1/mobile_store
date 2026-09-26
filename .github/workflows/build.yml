@@ -33,6 +33,6 @@ jobs:
       with:
         files: dist/*.exe
         tag_name: automated-build
-        name: "Latest Automated Build"
-        body: "تم تحديث ملف الـ EXE تلقائياً بناءً على آخر تعديل تم رفعه للمستودع (شامل واجهة المستخدم وقاعدة البيانات والفاتورة)."
+        name: "Mobile store application build"
+        body: "Lateset automated build of the application."
         overwrite: true

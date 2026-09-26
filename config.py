@@ -1,6 +1,6 @@
 {
-    # "host": "localhost",
-    "host": "192.168.1.10",
+    "host": "localhost",
+    # "host": "192.168.1.10",
     "database": "mobile_store_db_v1",
     "user": "postgres",
     # "password": "yousef1312012",

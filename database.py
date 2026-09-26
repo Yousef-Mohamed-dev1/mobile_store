@@ -8,11 +8,9 @@ CONFIG_FILE = "config.json"
 
 def load_db_config():
     default_config = {
-            # "host": "localhost",
-            "host": "192.168.1.10",
+            "host": "192.168.1.101",
             "database": "mobile_store_db_v1",
             "user": "postgres",
-            # "password": "yousef1312012",
             "password": "password",
             "port": 5432
         }
@@ -115,6 +113,31 @@ class DatabaseManager:
                 uid = cur.fetchone()['id']
                 conn.commit()
                 return uid
+
+    def update_user(self, user_id, full_name, permissions, new_password=None):
+        perm_json = json.dumps(permissions)
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                if new_password and new_password.strip():
+                    hashed = self.hash_password(new_password.strip())
+                    cur.execute("""
+                        UPDATE users 
+                        SET full_name = %s, permissions = %s, password_hash = %s 
+                        WHERE id = %s;
+                    """, (full_name, perm_json, hashed, user_id))
+                else:
+                    cur.execute("""
+                        UPDATE users 
+                        SET full_name = %s, permissions = %s 
+                        WHERE id = %s;
+                    """, (full_name, perm_json, user_id))
+                conn.commit()
+
+    def toggle_user_active(self, user_id):
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE users SET is_active = NOT is_active WHERE id = %s;", (user_id,))
+                conn.commit()
 
     def update_user_permissions(self, user_id, permissions):
         perm_json = json.dumps(permissions)
@@ -533,5 +556,4 @@ class DatabaseManager:
                         'customer_payments': cust_payments
                     }
         except Exception as e:
-            print(f"Error fetching device details: {e}")
             return None
