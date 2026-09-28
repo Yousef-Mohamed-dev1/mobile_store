@@ -21,7 +21,7 @@ PERMISSIONS_DICT = {
 BRAND_MODELS_SUGGESTIONS = {
     "iPhone": [
         # 17 Series (2025/2026)
-        "17 Pro Max", "17 Pro", "Air", "17",
+        "17 Pro Max", "17 Pro", "17 Slim", "17",
         # 16 Series
         "16 Pro Max", "16 Pro", "16 Plus", "16",
         # 15 Series
@@ -66,13 +66,20 @@ BRAND_MODELS_SUGGESTIONS = {
     ],
     "Oppo": [
         # Reno Series
-        "14 Pro", "14", "14 F",
-        "13 Pro", "13", "13 F",
-        "12 Pro", "12", "12 F",
-        "11 Pro", "11", "11 F",
-        "10 Pro", "10",
-        "8 Pro", "8", "8T 5G", "8T",
-        "7 Pro", "7 5G", "7", "6 Pro", "6 5G", "6", "5 5G", "5", "4 Pro", "4", "3 Pro", "3", "2F", "2",
+        "Reno 14 Pro Plus", "Reno 14 Pro", "Reno 14", "Reno 14 F",
+        "Reno 13 Pro", "Reno 13", "Reno 13 F",
+        "Reno 12 Pro", "Reno 12", "Reno 12 F", "Reno 12 FS",
+        "Reno 11 Pro", "Reno 11", "Reno 11 F",
+        "Reno 10 Pro Plus", "Reno 10 Pro", "Reno 10",
+        "Reno 9 Pro Plus", "Reno 9 Pro", "Reno 9",
+        "Reno 8 Pro", "Reno 8", "Reno 8T 5G", "Reno 8T", "Reno 8 Z", "Reno 8 Lite",
+        "Reno 7 Pro", "Reno 7 5G", "Reno 7", "Reno 7 Z", "Reno 7 SE",
+        "Reno 6 Pro Plus", "Reno 6 Pro", "Reno 6 5G", "Reno 6", "Reno 6 Z",
+        "Reno 5 Pro Plus", "Reno 5 Pro", "Reno 5 5G", "Reno 5", "Reno 5 Lite", "Reno 5 Z", "Reno 5 F",
+        "Reno 4 Pro", "Reno 4", "Reno 4 SE", "Reno 4 Z", "Reno 4 F",
+        "Reno 3 Pro", "Reno 3", "Reno 3 Vitality",
+        "Reno 2", "Reno 2 F", "Reno 2 Z",
+        "Reno 10x Zoom", "Reno Z", "Reno",
         # A Series
         "A80", "A79", "A78", "A77s", "A60", "A58", "A57", "A55", "A54", "A53", "A52", "A5s",
         "A38", "A31", "A18", "A17", "A16", "A15", "A12", "A5",
