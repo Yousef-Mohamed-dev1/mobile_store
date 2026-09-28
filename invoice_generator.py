@@ -27,14 +27,12 @@ def fix_arabic_text(text):
 
 def generate_invoice_image(invoice_data):
     """
-    توليد فاتورة طباعة أبيض وأسود عالية الدقة بدون حفظ في الداتا بيز.
+    توليد فاتورة طباعة عالية الدقة بدون حفظ في الداتا بيز.
     """
     width, height = 800, 1100
-    # إنشاء صورة أبيض وأسود (Grayscale / Monochrome)
     img = Image.new("RGB", (width, height), color="white")
     draw = ImageDraw.Draw(img)
 
-    # محاولة تحميل خط يدعم العربية أو الخط الافتراضي
     font_path = "arial.ttf"
     try:
         font_title = ImageFont.truetype(font_path, 24)
@@ -44,11 +42,9 @@ def generate_invoice_image(invoice_data):
     except Exception:
         font_title = font_header = font_body = font_bold = ImageFont.load_default()
 
-    # الإطار الخارجي (أسود فقط)
     draw.rectangle([(20, 20), (width - 20, height - 20)], outline="black", width=2)
     draw.rectangle([(25, 25), (width - 25, height - 25)], outline="black", width=1)
 
-    # الهيدر رأس الفاتورة
     title_text = fix_arabic_text("مركز هشام كيوان لإدارة الهواتف الذكية")
     sub_title = fix_arabic_text("فاتورة بيع / تسليم جهاز")
     
@@ -56,7 +52,6 @@ def generate_invoice_image(invoice_data):
     draw.text((width // 2, 85), sub_title, fill="black", font=font_header, anchor="mm")
     draw.line([(40, 110), (width - 40, 110)], fill="black", width=2)
 
-    # بيانات الفاتورة والعميل
     sale_id = invoice_data.get('sale_id', '-')
     cust_name = invoice_data.get('customer_name', '-')
     cust_phone = invoice_data.get('customer_phone', '-')
@@ -78,11 +73,9 @@ def generate_invoice_image(invoice_data):
     draw.line([(40, y), (width - 40, y)], fill="black", width=1)
     y += 10
 
-    # جدول تفاصيل الجهاز (RTL)
     headers = ["الإجمالي", "السيريال / IMEI", "المواصفات", "الموديل / الجهاز"]
     col_widths = [120, 220, 180, 200]
     
-    # رسم هيدر الجدول
     curr_x = width - 40
     for idx, head in enumerate(headers):
         w = col_widths[idx]
@@ -115,7 +108,6 @@ def generate_invoice_image(invoice_data):
 
     y += 60
 
-    # المبالغ والماليات
     paid = invoice_data.get('cash_received', 0.0)
     rem = invoice_data.get('remaining_balance', 0.0)
 
@@ -124,7 +116,6 @@ def generate_invoice_image(invoice_data):
     draw.text((width - 50, y + 50), fix_arabic_text(f"المدفوع نقداً: {float(paid):,.2f} ج.م"), fill="black", font=font_body, anchor="ra")
     draw.text((width - 50, y + 80), fix_arabic_text(f"المتبقي (الآجل): {float(rem):,.2f} ج.م"), fill="black", font=font_bold, anchor="ra")
 
-    # الملاحظات والشروط
     y += 130
     draw.line([(40, y), (width - 40, y)], fill="black", width=1)
     y += 15
@@ -137,14 +128,12 @@ def generate_invoice_image(invoice_data):
         draw.text((right_x - 10, y), fix_arabic_text(line), fill="black", font=font_body, anchor="ra")
         y += 22
 
-    # التوقيعات
     y = height - 90
     draw.line([(40, y), (width - 40, y)], fill="black", width=1)
     y += 25
     draw.text((100, y), fix_arabic_text("توقيع العميل / المستلم"), fill="black", font=font_bold, anchor="ma")
     draw.text((width - 100, y), fix_arabic_text("توقيع الإدارة / المحل"), fill="black", font=font_bold, anchor="ma")
 
-    # حفظ في ملف مؤقت بدون أي حفظ في الداتا بيز
     temp_dir = tempfile.gettempdir()
     file_path = os.path.join(temp_dir, f"temp_invoice_{sale_id}.png")
     img.save(file_path)

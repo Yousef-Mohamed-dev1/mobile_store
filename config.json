@@ -1,6 +1,6 @@
 {
     "host": "localhost",
-    "database": "mobile_store_db_v1",
+    "database": "mobile_store_db_v4",
     "user": "postgres",
     "password": "yousef1312012",
     "port": 5432

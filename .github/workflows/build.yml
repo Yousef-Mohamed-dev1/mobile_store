@@ -22,7 +22,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller psycopg2-binary bcrypt pillow
-        if (Test-Path requirements.txt) { pip import -r requirements.txt }
+        if (Test-Path requirements.txt) { pip install -r requirements.txt }
 
     - name: Build with PyInstaller
       run: |
@@ -34,5 +34,7 @@ jobs:
         files: dist/*.exe
         tag_name: automated-build
         name: "Mobile store application build"
-        body: "Lateset automated build of the application."
+        body: "Latest automated build of the application."
+        prerelease: false
+        generate_release_notes: true
         overwrite: true
