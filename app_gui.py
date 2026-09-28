@@ -215,9 +215,9 @@ class MasterMobileApp(tk.Tk):
         return clean_id_val(val)
 
     def load_logo_icon(self):
-        if os.path.exists("logo.png"):
+        if os.path.exists("logo.jpg"):
             try:
-                img = Image.open("logo.png")
+                img = Image.open("logo.jpg")
                 img_top = img.copy()
                 img_top.thumbnail((40, 40), Image.Resampling.LANCZOS)
                 self.logo_top = ImageTk.PhotoImage(img_top)
