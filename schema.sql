@@ -4,12 +4,13 @@
 -- يدعم التثبيت الجديد والترقية التلقائية الآمنة لقواعد البيانات الحالية دون فقدان أي بيانات
 -- =================================================================================
 
--- 1. جدول المستخدمين والصلاحيات
+-- 1. جدول المستخدمين والصلاحيات التفصيلية
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(100) NOT NULL DEFAULT 'مدير النظام',
+    role VARCHAR(30) DEFAULT 'custom',
     permissions JSONB DEFAULT '{}'::jsonb,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -60,10 +61,12 @@ CREATE TABLE IF NOT EXISTS devices (
     created_by_user_id INT REFERENCES users(id)
 );
 
--- 5. جدول المبيعات والخرج (يدعم ملاحظات البيع)
+-- 5. جدول المبيعات والخرج (يدعم الخصم وملاحظات البيع)
 CREATE TABLE IF NOT EXISTS sales (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id),
+    original_price NUMERIC(12, 2) DEFAULT 0.00,
+    discount NUMERIC(12, 2) DEFAULT 0.00,
     sell_price NUMERIC(12, 2) NOT NULL,
     customer_name VARCHAR(100) NOT NULL DEFAULT 'عميل نقدي',
     customer_phone VARCHAR(30),
@@ -80,6 +83,7 @@ CREATE TABLE IF NOT EXISTS customer_payments (
     id SERIAL PRIMARY KEY,
     sale_id INT REFERENCES sales(id) ON DELETE CASCADE,
     payment_amount NUMERIC(12, 2) NOT NULL,
+    notes TEXT,
     payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by_user_id INT REFERENCES users(id)
 );
@@ -90,6 +94,7 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
     invoice_id INT REFERENCES supplier_invoices(id) ON DELETE CASCADE,
     supplier_id INT REFERENCES suppliers(id),
     payment_amount NUMERIC(12, 2) NOT NULL,
+    notes TEXT,
     payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by_user_id INT REFERENCES users(id)
 );
@@ -103,24 +108,13 @@ CREATE TABLE IF NOT EXISTS capital_transactions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by_user_id INT REFERENCES users(id)
 );
-INSERT INTO users (username, password_hash, full_name, permissions)
-VALUES (
-    'admin', 
-    'admin123',
-    'المدير العام', 
-    '{
-        "can_view_buy_price": true,
-        "can_manage_inventory": true,
-        "can_manage_users": true,
-        "can_view_reports": true,
-        "can_process_returns": true,
-        "can_edit_prices": true
-    }'::jsonb
-) ON CONFLICT (username) DO NOTHING;
+
 -- =================================================================================
 -- ترقيات تلقائية آمنة لقواعد البيانات الموجودة مسبقاً (ALTER TABLE IF NOT EXISTS)
 -- =================================================================================
 ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(100) DEFAULT 'مستخدم النظام';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(30) DEFAULT 'custom';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 
 ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_type VARCHAR(50) DEFAULT 'تاجر';
@@ -141,6 +135,8 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS is_sold BOOLEAN DEFAULT FALSE;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS created_by_user_id INT REFERENCES users(id);
 
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS original_price NUMERIC(12, 2) DEFAULT 0.00;
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS discount NUMERIC(12, 2) DEFAULT 0.00;
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS customer_name VARCHAR(100) DEFAULT 'عميل نقدي';
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(30);
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS cash_received NUMERIC(12, 2) DEFAULT 0.00;
@@ -149,3 +145,51 @@ ALTER TABLE sales ADD COLUMN IF NOT EXISTS net_profit NUMERIC(12, 2) DEFAULT 0.0
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS sell_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS created_by_user_id INT REFERENCES users(id);
+
+ALTER TABLE customer_payments ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- =================================================================================
+-- إنشاء أو تحديث حساب المدير العام الافتراضي بكامل الصلاحيات التفصيلية (22 صلاحية)
+-- ملاحظة: يقوم التطبيق بتشفير كلمة المرور تلقائياً بـ bcrypt عند أول تسجيل دخول
+-- =================================================================================
+INSERT INTO users (username, password_hash, full_name, role, permissions, is_active)
+VALUES (
+    'admin',
+    'admin123',
+    'المدير العام',
+    'admin',
+    '{
+        "can_view_inventory": true,
+        "can_view_buy_price": true,
+        "can_edit_inventory": true,
+        "can_delete_inventory": true,
+        "can_manage_inventory": true,
+        "can_view_sales_screen": true,
+        "can_execute_sale": true,
+        "can_edit_prices": true,
+        "can_print_sale_invoice": true,
+        "can_process_returns": true,
+        "can_buy_devices": true,
+        "can_add_supplier_in_buy": true,
+        "can_view_customer_debts": true,
+        "can_collect_customer_debt": true,
+        "can_print_customer_debt": true,
+        "can_view_supplier_debts": true,
+        "can_pay_supplier_debt": true,
+        "can_manage_suppliers": true,
+        "can_print_supplier_invoice": true,
+        "can_view_reports": true,
+        "can_view_liquidity": true,
+        "can_add_liquidity": true,
+        "can_view_liquidity_log": true,
+        "can_view_profits": true,
+        "can_view_sales_report": true,
+        "can_manage_users": true
+    }'::jsonb,
+    TRUE
+)
+ON CONFLICT (username) DO UPDATE
+SET permissions = EXCLUDED.permissions,
+    role = 'admin',
+    is_active = TRUE;
