@@ -3,7 +3,7 @@ import tempfile
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 
-# محاولة تحميل مكتبات تشكيل العربي لمنع تقطيع الحروف أو انعكاس الكلمات الإنجليزية مع العربية
+# دعم معالجة النصوص العربية وعكس الاتجاه لمنع تشوه النصوص والأرقام
 try:
     import arabic_reshaper
     from bidi.algorithm import get_display
@@ -16,6 +16,12 @@ try:
     HAS_QR = True
 except ImportError:
     HAS_QR = False
+
+
+# المقاس القياسي الموحد لصفحات A4 و A5 بدقة فائقة 150 DPI (نسبة 1:1.414 القياسية)
+# 1240 × 1754 بكسل - يملأ الورقة بامتياز وتوازن وتوزيع متقن للمساحة بدون فراغات
+PAGE_WIDTH = 1240
+PAGE_HEIGHT = 1754
 
 
 def _clean_num_val(val):
@@ -36,7 +42,7 @@ def fmt_money(val):
 
 
 def fix_arabic_text(text):
-    """إعادة تشكيل النص العربي مع الحفاظ على ترتيب الكلمات الإنجليزية والأرقام بدون تشوه."""
+    """إعادة تشكيل النص العربي مع الحفاظ التام على ترتيب الأرقام والكلمات اللاتينية."""
     if text is None:
         return ""
     s = str(text).replace('\u200f', '').replace('\u200e', '').replace('\u202b', '').replace('\u202c', '').strip()
@@ -54,93 +60,127 @@ def fix_arabic_text(text):
 def _load_fonts(scale=1.0):
     font_candidates_bold = [
         "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf",
         "C:/Windows/Fonts/tahomabd.ttf",
-        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/calibrib.ttf",
+        "/usr/share/fonts/truetype/kacst/KacstTitle.ttf",
+        "/usr/share/fonts/truetype/kacst/KacstOffice.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "arialbd.ttf",
         "arial.ttf"
     ]
     font_candidates_reg = [
         "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/tahoma.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+        "C:/Windows/Fonts/calibri.ttf",
+        "/usr/share/fonts/truetype/kacst/KacstBook.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "arial.ttf"
     ]
 
     bold_path = next((p for p in font_candidates_bold if os.path.exists(p)), None)
     reg_path = next((p for p in font_candidates_reg if os.path.exists(p)), None)
+    effective_reg = reg_path or bold_path
 
     try:
-        if bold_path and reg_path:
+        if bold_path:
             return {
-                "title": ImageFont.truetype(bold_path, int(28 * scale)),
-                "subtitle": ImageFont.truetype(bold_path, int(18 * scale)),
-                "section": ImageFont.truetype(bold_path, int(16 * scale)),
-                "bold": ImageFont.truetype(bold_path, int(14 * scale)),
-                "body": ImageFont.truetype(reg_path, int(14 * scale)),
-                "small": ImageFont.truetype(reg_path, int(12 * scale)),
+                "banner": ImageFont.truetype(bold_path, int(46 * scale)),
+                "huge": ImageFont.truetype(bold_path, int(36 * scale)),
+                "title": ImageFont.truetype(bold_path, int(30 * scale)),
+                "subtitle": ImageFont.truetype(bold_path, int(26 * scale)),
+                "section": ImageFont.truetype(bold_path, int(23 * scale)),
+                "bold": ImageFont.truetype(bold_path, int(21 * scale)),
+                "body": ImageFont.truetype(effective_reg or bold_path, int(19 * scale)),
+                "small": ImageFont.truetype(bold_path, int(16 * scale)),
+                "tiny": ImageFont.truetype(effective_reg or bold_path, int(14 * scale)),
             }
     except Exception:
         pass
 
     default_f = ImageFont.load_default()
     return {
+        "banner": default_f,
+        "huge": default_f,
         "title": default_f,
         "subtitle": default_f,
         "section": default_f,
         "bold": default_f,
         "body": default_f,
         "small": default_f,
+        "tiny": default_f,
     }
 
 
 def _get_palette(style_name="color"):
     if style_name == "burgundy":
         return {
-            "primary": "#7f1d1d",
-            "secondary": "#991b1b",
-            "header_bg": "#fef2f2",
-            "table_hdr": "#7f1d1d",
+            "primary": "#881337",        # عنابي غامق ملكي
+            "secondary": "#be123c",      # عنابي متوسط
+            "accent": "#9f1239",
+            "header_bg": "#fff1f2",
+            "table_hdr": "#881337",
             "table_hdr_text": "#ffffff",
-            "accent_box": "#fff1f2",
-            "border": "#450a0a",
-            "text": "#111827",
-            "muted": "#4b5563"
+            "card_bg": "#fff5f5",
+            "accent_box": "#ffe4e6",
+            "total_box": "#fff1f2",
+            "border": "#9f1239",
+            "border_light": "#fecdd3",
+            "text": "#1e293b",
+            "text_muted": "#475569",
+            "danger": "#e11d48",
+            "success": "#15803d",
+            "gold": "#b45309"
         }
     elif style_name == "grayscale":
         return {
-            "primary": "#000000",
-            "secondary": "#262626",
-            "header_bg": "#f5f5f5",
-            "table_hdr": "#262626",
+            "primary": "#0f172a",        # أسود / رمادي داكن عالي التباين
+            "secondary": "#334155",
+            "accent": "#1e293b",
+            "header_bg": "#f8fafc",
+            "table_hdr": "#1e293b",
             "table_hdr_text": "#ffffff",
-            "accent_box": "#f5f5f5",
-            "border": "#000000",
-            "text": "#000000",
-            "muted": "#404040"
-        }
-    else:
-        return {
-            "primary": "#1e3a8a",
-            "secondary": "#1d4ed8",
-            "header_bg": "#eff6ff",
-            "table_hdr": "#1e3a8a",
-            "table_hdr_text": "#ffffff",
-            "accent_box": "#f0fdf4",
-            "border": "#1e3a8a",
+            "card_bg": "#f8fafc",
+            "accent_box": "#f1f5f9",
+            "total_box": "#f8fafc",
+            "border": "#0f172a",
+            "border_light": "#cbd5e1",
             "text": "#0f172a",
-            "muted": "#475569"
+            "text_muted": "#334155",
+            "danger": "#0f172a",
+            "success": "#0f172a",
+            "gold": "#334155"
+        }
+    else:  # Default: أزرق ملكي فاخر
+        return {
+            "primary": "#0f2b5c",        # أزرق كحلي فخم
+            "secondary": "#1d4ed8",      # أزرق ملكي زاهي
+            "accent": "#0284c7",         # سماوي عميق
+            "header_bg": "#f0f7ff",
+            "table_hdr": "#0f2b5c",
+            "table_hdr_text": "#ffffff",
+            "card_bg": "#f8fafc",
+            "accent_box": "#f0fdf4",
+            "total_box": "#f0fdf4",
+            "border": "#0f2b5c",
+            "border_light": "#cbd5e1",
+            "text": "#0f172a",
+            "text_muted": "#334155",
+            "danger": "#dc2626",
+            "success": "#16a34a",
+            "gold": "#b45309"
         }
 
 
 def generate_invoice_image(invoice_data):
     """
-    توليد فاتورة احترافية عالية الدقة تدعم:
-    1. فواتير البيع السريع (SALE)
-    2. فواتير / إيصالات الخرج وديون العملاء (CUSTOMER_DEBT)
-    3. فواتير وكشوف حساب الموردين (SUPPLIER_DEBT)
-    مع خفض موضع الباركود والـ QR للأسفل وتوسيع الهوامش السفلية للقراءة الفورية بالسكانر.
+    توليد صورة فاتورة قياسية بمقاس A4 / A5 متناسقة تماماً ومستغلة لكامل المساحة.
+    توزيع متقن وعالي الدقة للخطوط والألوان والسيريال والملخص المالي والتوقيعات.
     """
     if not os.path.exists("invoices"):
         try:
@@ -148,39 +188,35 @@ def generate_invoice_image(invoice_data):
         except Exception:
             pass
 
-    paper_size = str(invoice_data.get("paper_size", "a4")).lower().strip()
-    is_a5 = (paper_size == "a5")
-
     style_name = invoice_data.get("print_style", "color")
     palette = _get_palette(style_name)
-    font_scale = 0.92 if is_a5 else 1.0
-    fonts = _load_fonts(scale=font_scale)
+    fonts = _load_fonts(scale=1.0)
 
-    devices_list = invoice_data.get("devices_list") or []
-    if not devices_list and invoice_data.get("device"):
-        devices_list = [invoice_data["device"]]
-
-    payments_list = invoice_data.get("payments_list") or []
-    extra_rows_height = max(0, (len(devices_list) - 1) * 64) + (len(payments_list) * 30 if payments_list else 0)
-
-    width = 820 if is_a5 else 900
-    base_height = 1140 if is_a5 else 1180
-    height = max(base_height, (1080 if is_a5 else 1120) + extra_rows_height)
+    width = PAGE_WIDTH
+    height = PAGE_HEIGHT
     img = Image.new("RGB", (width, height), color="#ffffff")
     draw = ImageDraw.Draw(img)
 
-    # الإطار الخارجي المزدوج
-    draw.rectangle([(18, 18), (width - 18, height - 18)], outline=palette["border"], width=3)
-    draw.rectangle([(24, 24), (width - 24, height - 24)], outline=palette["border"], width=1)
+    margin_x = 44
+    content_width = width - (2 * margin_x)
+    right_x = width - margin_x
+    left_x = margin_x
 
-    # ترويسة المركز
-    draw.rectangle([(36, 36), (width - 36, 145)], fill=palette["header_bg"], outline=palette["border"], width=2)
+    # 1. إطار الورقة الخارجي الملكي (Double Border)
+    draw.rectangle([(14, 14), (width - 14, height - 14)], outline=palette["border"], width=3)
+    draw.rectangle([(22, 22), (width - 22, height - 22)], outline=palette["border"], width=1)
 
+    # 2. ترويسة المتجر والوثيقة الرسمية
+    header_top = 34
+    header_h = 138
+    draw.rectangle([(margin_x, header_top), (right_x, header_top + header_h)], fill=palette["header_bg"], outline=palette["border"], width=2)
+
+    # إضافة شعار المتجر إذا وجد
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
-            logo.thumbnail((85, 85), Image.Resampling.LANCZOS)
-            img.paste(logo, (55, 48), logo)
+            logo.thumbnail((110, 110), Image.Resampling.LANCZOS)
+            img.paste(logo, (margin_x + 20, header_top + 14), logo)
         except Exception:
             pass
 
@@ -188,16 +224,17 @@ def generate_invoice_image(invoice_data):
     is_supp_doc = doc_type in ("SUPPLIER_INVOICE", "SUPPLIER_DEBT")
 
     if doc_type == "CUSTOMER_DEBT":
-        sub_label = "بيان مديونية وتحصيل عميل (الخرج)"
+        sub_label = "بيان مديونية وحساب عميل معتمد"
     elif is_supp_doc:
-        sub_label = "فاتورة مشتريات وتوريد بضاعة"
+        sub_label = "فاتورة مشتريات وتوريد بضاعة معتمدة"
     else:
-        sub_label = "فاتورة بيع وضمان معتمد"
+        sub_label = "فاتورة بيع وضمان رسمي معتمد للأجهزة الذكية"
 
-    draw.text((width // 2, 68), fix_arabic_text("محل هشام كيوان"), fill=palette["primary"], font=fonts["title"], anchor="mm")
-    draw.text((width // 2, 112), fix_arabic_text(sub_label), fill=palette["secondary"], font=fonts["subtitle"], anchor="mm")
+    draw.text((width // 2, header_top + 38), fix_arabic_text("محل هشام كيوان لإدارة الهواتف"), fill=palette["primary"], font=fonts["banner"], anchor="mm")
+    draw.text((width // 2, header_top + 84), fix_arabic_text(sub_label), fill=palette["secondary"], font=fonts["subtitle"], anchor="mm")
+    draw.text((width // 2, header_top + 116), fix_arabic_text("خدمة عملاء معتمدة  •  أجهزة أصلية ومفحوصة  •  ضمان صريح ومسجل بالنظام"), fill=palette["text_muted"], font=fonts["small"], anchor="mm")
 
-    # بيانات المستند والعميل / المورد
+    # 3. بطاقة بيانات الفاتورة والأطراف (العميل / المورد)
     sale_id = invoice_data.get("sale_id") or invoice_data.get("invoice_id") or "-"
     if is_supp_doc:
         party_label = "المورد / التاجر:"
@@ -210,42 +247,55 @@ def generate_invoice_image(invoice_data):
 
     inv_date = invoice_data.get("date_str") or datetime.now().strftime("%Y-%m-%d %H:%M")
     seller_name = invoice_data.get("seller_name") or ""
-
-    y = 162
-    draw.rectangle([(36, y), (width - 36, y + 92)], fill="#ffffff", outline=palette["border"], width=1)
-
-    right_x = width - 52
-    left_x = 52
-
     inv_code = invoice_data.get("invoice_code") or (f"INV-{doc_type}-{sale_id}" if sale_id != "-" else f"INV-{doc_type}")
+
     page_n = invoice_data.get("page_num", 1)
     tot_p = invoice_data.get("total_pages", 1)
-    page_txt = f"  (صفحة {page_n} من {tot_p})" if tot_p > 1 else ""
-    draw.text((right_x, y + 18), fix_arabic_text(f"كود الفاتورة: {inv_code}  (#{sale_id}){page_txt}"), fill=palette["primary"], font=fonts["bold"], anchor="ra")
-    draw.text((left_x, y + 18), fix_arabic_text(f"التاريخ والوقت: {inv_date}"), fill=palette["text"], font=fonts["body"], anchor="la")
 
-    draw.text((right_x, y + 52), fix_arabic_text(f"{party_label} {cust_name}"), fill=palette["text"], font=fonts["bold"], anchor="ra")
-    phone_or_seller = f"رقم الهاتف: {cust_phone}" + (f"   |   المسؤول: {seller_name}" if seller_name else "")
-    draw.text((left_x, y + 52), fix_arabic_text(phone_or_seller), fill=palette["muted"], font=fonts["body"], anchor="la")
+    card_y = header_top + header_h + 16
+    card_h = 124
+    draw.rectangle([(margin_x, card_y), (right_x, card_y + card_h)], fill="#ffffff", outline=palette["border"], width=1)
+    draw.line([(margin_x + 12, card_y + 60), (right_x - 12, card_y + 60)], fill=palette["border_light"], width=1)
 
-    y += 105
+    # السطر الأول من بطاقة البيانات: كود الفاتورة والصفحة والتاريخ
+    draw.text((right_x - 20, card_y + 30), fix_arabic_text(f"كود الفاتورة: {inv_code}  (#{sale_id})"), fill=palette["primary"], font=fonts["section"], anchor="ra")
+    
+    page_badge_txt = f"صفحة {page_n} من {tot_p}"
+    draw.rectangle([(width // 2 - 110, card_y + 13), (width // 2 + 110, card_y + 47)], fill=palette["header_bg"], outline=palette["secondary"], width=1)
+    draw.text((width // 2, card_y + 30), fix_arabic_text(page_badge_txt), fill=palette["secondary"], font=fonts["bold"], anchor="mm")
+
+    draw.text((left_x + 20, card_y + 30), fix_arabic_text(f"التاريخ: {inv_date}"), fill=palette["text"], font=fonts["section"], anchor="la")
+
+    # السطر الثاني: اسم العميل / المورد بالخط العريض، ورقم الهاتف والمسؤول
+    draw.text((right_x - 20, card_y + 92), fix_arabic_text(f"{party_label} {cust_name}"), fill=palette["text"], font=fonts["huge"], anchor="ra")
+    phone_seller_txt = f"الهاتف: {cust_phone}" + (f"  |  المسؤول: {seller_name}" if seller_name else "")
+    draw.text((left_x + 20, card_y + 92), fix_arabic_text(phone_seller_txt), fill=palette["text_muted"], font=fonts["bold"], anchor="la")
+
+    # 4. جدول أو بطاقة الأجهزة المشمولة
+    devices_list = invoice_data.get("devices_list") or []
+    if not devices_list and invoice_data.get("device"):
+        devices_list = [invoice_data["device"]]
+
+    payments_list = invoice_data.get("payments_list") or []
+    is_final_page = (page_n == tot_p)
+
     price_col_title = "سعر الشراء / التكلفة" if is_supp_doc else "القيمة / السعر"
-    table_left = 36
-    table_right = width - 36
-    total_table_w = table_right - table_left
     sell_p = _clean_num_val(invoice_data.get("sell_price") if invoice_data.get("sell_price") is not None else invoice_data.get("total_amount", 0.0))
 
-    if len(devices_list) == 1:
+    y = card_y + card_h + 20
+
+    # في حال وجود جهاز واحد فقط في الفاتورة (النمط الأكثر استخداماً):
+    if len(devices_list) == 1 and tot_p == 1:
         dev = devices_list[0]
         dev_id = dev.get("id") or dev.get("device_id") or "-"
         category = str(dev.get("category") or "").strip()
         model = str(dev.get("model") or "").strip()
         dev_full_name = f"{category} {model}".strip() or "جهاز غير محدد"
-        
+
         storage = str(dev.get("storage") or "-").replace("GB", "").strip() or "-"
         ram = str(dev.get("ram") or "").replace("GB", "").strip()
-        ram_txt = f" / {ram}GB RAM" if ram and ram != "لا يوجد" and ram != "-" else ""
-        
+        ram_txt = f" / {ram}GB RAM" if ram and ram not in ("لا يوجد", "-") else ""
+
         bat_val = dev.get("battery_health") or dev.get("battery") or 0
         try:
             bat_num = int(bat_val)
@@ -255,7 +305,7 @@ def generate_invoice_image(invoice_data):
 
         cond = str(dev.get("device_condition") or "مستعمل").strip()
         has_box_val = dev.get("has_box")
-        box_txt = "بعلبة أصلية 📦" if has_box_val and str(has_box_val).lower() not in ("false", "0", "بدون") else "بدون علبة"
+        box_txt = "علبة أصلية 📦" if has_box_val and str(has_box_val).lower() not in ("false", "0", "بدون") else "بدون علبة"
         imei = str(dev.get("imei_serial") or "-").strip()
         color = str(dev.get("color") or "أسود").strip()
         if not color or color == "بدون":
@@ -269,73 +319,79 @@ def generate_invoice_image(invoice_data):
         else:
             row_price = _clean_num_val(dev.get("sell_price") if dev.get("sell_price") is not None else sell_p)
 
-        card_h = 168 if accessories and accessories not in ("بدون", "-") else 140
-        draw.rectangle([(table_left, y), (table_right, y + card_h)], fill="#ffffff", outline=palette["primary"], width=2)
-        
-        draw.rectangle([(table_left, y), (table_right, y + 36)], fill=palette["header_bg"], outline=palette["border"], width=1)
-        draw.text((table_right - 14, y + 18), fix_arabic_text(f"📱 بيانات الجهاز: {dev_full_name}  (كود: #{dev_id})"), fill=palette["primary"], font=fonts["bold"], anchor="ra")
-        draw.text((table_left + 14, y + 18), fix_arabic_text(f"{price_col_title}: {fmt_money(row_price)}"), fill=palette["secondary"], font=fonts["bold"], anchor="la")
+        card_h_single = 350 if accessories and accessories not in ("بدون", "-") else 300
+        draw.rectangle([(margin_x, y), (right_x, y + card_h_single)], fill="#ffffff", outline=palette["primary"], width=2)
 
-        y_imei = y + 42
-        draw.rectangle([(table_left + 10, y_imei), (table_right - 10, y_imei + 32)], fill=palette["accent_box"], outline=palette["border"], width=1)
-        draw.text((table_right - 20, y_imei + 16), fix_arabic_text("السيريال الكامل المعتمد (IMEI):"), fill=palette["text"], font=fonts["bold"], anchor="ra")
-        draw.text((table_left + 24, y_imei + 16), imei, fill=palette["primary"], font=fonts["bold"], anchor="la")
+        # ترويسة بطاقة الجهاز
+        draw.rectangle([(margin_x, y), (right_x, y + 66)], fill=palette["header_bg"], outline=palette["border"], width=1)
+        draw.text((right_x - 18, y + 33), fix_arabic_text(f"📱 نوع وموديل الجهاز: {dev_full_name}  (كود: #{dev_id})"), fill=palette["primary"], font=fonts["section"], anchor="ra")
+        draw.text((left_x + 18, y + 33), fix_arabic_text(f"{price_col_title}: {fmt_money(row_price)}"), fill=palette["secondary"], font=fonts["huge"], anchor="la")
 
-        y_badges = y_imei + 38
-        b_w = (total_table_w - 30) // 3
+        # خانة السيريال IMEI بخط عريض وواضح جداً
+        y_imei = y + 76
+        draw.rectangle([(margin_x + 14, y_imei), (right_x - 14, y_imei + 56)], fill=palette["card_bg"], outline=palette["border_light"], width=1)
+        draw.text((right_x - 24, y_imei + 28), fix_arabic_text("السيريال المعتمد (IMEI):"), fill=palette["text"], font=fonts["bold"], anchor="ra")
+        draw.text((left_x + 24, y_imei + 28), imei, fill=palette["primary"], font=fonts["huge"], anchor="la")
+
+        # شبكة المواصفات الفنية
+        y_badges = y_imei + 66
+        badge_w = (content_width - 40) // 3
         badge_row1 = [
             (f"💾 السعة: {storage} GB{ram_txt}", 0),
             (f"🔋 صحة البطارية: {bat_txt}", 1),
             (f"🎨 اللون: {color}", 2),
         ]
         for b_text, col_idx in badge_row1:
-            bx_r = table_right - 10 - (col_idx * b_w)
-            bx_l = bx_r - b_w + 6
-            draw.rectangle([(bx_l, y_badges), (bx_r, y_badges + 26)], fill="#f8fafc", outline=palette["border"], width=1)
-            draw.text((bx_r - 8, y_badges + 13), fix_arabic_text(b_text), fill=palette["text"], font=fonts["small"], anchor="ra")
+            bx_r = right_x - 14 - (col_idx * badge_w)
+            bx_l = bx_r - badge_w + 8
+            draw.rectangle([(bx_l, y_badges), (bx_r, y_badges + 44)], fill="#f8fafc", outline=palette["border_light"], width=1)
+            draw.text((bx_r - 12, y_badges + 22), fix_arabic_text(b_text), fill=palette["text"], font=fonts["bold"], anchor="ra")
 
-        y_badges2 = y_badges + 28
+        y_badges2 = y_badges + 52
         badge_row2 = [
             (f"🏷️ الحالة: {cond}", 0),
             (f"📦 العلبة: {box_txt}", 1),
             (f"🏛️ الضريبة: {tax_txt}", 2),
         ]
         for b_text, col_idx in badge_row2:
-            bx_r = table_right - 10 - (col_idx * b_w)
-            bx_l = bx_r - b_w + 6
-            draw.rectangle([(bx_l, y_badges2), (bx_r, y_badges2 + 26)], fill="#f8fafc", outline=palette["border"], width=1)
-            draw.text((bx_r - 8, y_badges2 + 13), fix_arabic_text(b_text), fill=palette["text"], font=fonts["small"], anchor="ra")
+            bx_r = right_x - 14 - (col_idx * badge_w)
+            bx_l = bx_r - badge_w + 8
+            draw.rectangle([(bx_l, y_badges2), (bx_r, y_badges2 + 44)], fill="#f8fafc", outline=palette["border_light"], width=1)
+            draw.text((bx_r - 12, y_badges2 + 22), fix_arabic_text(b_text), fill=palette["text"], font=fonts["bold"], anchor="ra")
 
         if accessories and accessories not in ("بدون", "-"):
-            y_acc = y_badges2 + 28
-            draw.rectangle([(table_left + 10, y_acc), (table_right - 10, y_acc + 24)], fill="#f1f5f9", outline=palette["border"], width=1)
-            draw.text((table_right - 18, y_acc + 12), fix_arabic_text(f"🎧 الملحقات والإكسسوارات المرفقة: {accessories}"), fill=palette["muted"], font=fonts["small"], anchor="ra")
+            y_acc = y_badges2 + 52
+            draw.rectangle([(margin_x + 14, y_acc), (right_x - 14, y_acc + 42)], fill="#f1f5f9", outline=palette["border_light"], width=1)
+            draw.text((right_x - 24, y_acc + 21), fix_arabic_text(f"🎧 الملحقات المرفقة: {accessories}"), fill=palette["text_muted"], font=fonts["bold"], anchor="ra")
 
-        y += card_h + 8
+        y += card_h_single + 24
 
     else:
-        price_col_w = int(total_table_w * 0.16)
-        cond_col_w = int(total_table_w * 0.20)
-        specs_col_w = int(total_table_w * 0.20)
-        imei_col_w = int(total_table_w * 0.24)
-        model_col_w = total_table_w - (price_col_w + cond_col_w + specs_col_w + imei_col_w)
+        # جدول رسمي عريض وواسع لعدة أجهزة بتنسيق فخم عالي الوضوح
+        price_col_w = int(content_width * 0.16)
+        cond_col_w = int(content_width * 0.17)
+        specs_col_w = int(content_width * 0.19)
+        imei_col_w = int(content_width * 0.22)
+        model_col_w = content_width - (price_col_w + cond_col_w + specs_col_w + imei_col_w)
 
         headers = [
             (price_col_title, price_col_w),
             ("الحالة واللون والعلبة", cond_col_w),
-            ("المواصفات (سعة/رام/بطارية)", specs_col_w),
+            ("المواصفات (سعة/بطارية)", specs_col_w),
             ("السيريال IMEI", imei_col_w),
             ("كود وموديل الجهاز", model_col_w)
         ]
 
-        curr_x = table_right
+        hdr_h = 54
+        curr_x = right_x
         for head_text, w in reversed(headers):
-            draw.rectangle([(curr_x - w, y), (curr_x, y + 36)], fill=palette["table_hdr"], outline=palette["border"], width=1)
-            draw.text((curr_x - w // 2, y + 18), fix_arabic_text(head_text), fill=palette["table_hdr_text"], font=fonts["bold"], anchor="mm")
+            draw.rectangle([(curr_x - w, y), (curr_x, y + hdr_h)], fill=palette["table_hdr"], outline=palette["border"], width=1)
+            draw.text((curr_x - w // 2, y + hdr_h // 2), fix_arabic_text(head_text), fill=palette["table_hdr_text"], font=fonts["bold"], anchor="mm")
             curr_x -= w
 
-        y += 36
+        y += hdr_h
 
+        row_h = 58
         for d_idx, dev in enumerate(devices_list):
             dev_id = dev.get("id") or dev.get("device_id") or "-"
             category = str(dev.get("category") or "").strip()
@@ -345,8 +401,8 @@ def generate_invoice_image(invoice_data):
 
             storage = str(dev.get("storage") or "-").replace("GB", "").strip() or "-"
             ram = str(dev.get("ram") or "").replace("GB", "").strip()
-            ram_txt = f" / {ram}GB" if ram and ram != "لا يوجد" and ram != "-" else ""
-            
+            ram_txt = f"/{ram}G" if ram and ram not in ("لا يوجد", "-") else ""
+
             bat_val = dev.get("battery_health") or dev.get("battery") or 0
             try:
                 bat_num = int(bat_val)
@@ -356,7 +412,7 @@ def generate_invoice_image(invoice_data):
 
             cond = str(dev.get("device_condition") or "مستعمل").strip()
             has_box_val = dev.get("has_box")
-            box_txt = "بعلبة 📦" if has_box_val and str(has_box_val).lower() not in ("false", "0", "بدون") else "بدون علبة"
+            box_txt = "علبة 📦" if has_box_val and str(has_box_val).lower() not in ("false", "0", "بدون") else "بدون علبة"
             imei = str(dev.get("imei_serial") or "-").strip()
             color = str(dev.get("color") or "أسود").strip()
             if not color or color == "بدون":
@@ -367,173 +423,201 @@ def generate_invoice_image(invoice_data):
             else:
                 row_price = _clean_num_val(dev.get("sell_price") if dev.get("sell_price") is not None else sell_p)
 
-            row_h = 36
             row_bg = "#ffffff" if d_idx % 2 == 0 else "#f8fafc"
 
-            cell_x_model = table_right
-            draw.rectangle([(cell_x_model - model_col_w, y), (cell_x_model, y + row_h)], fill=row_bg, outline=palette["border"], width=1)
-            draw.text((cell_x_model - 10, y + 18), fix_arabic_text(dev_title_txt), fill=palette["primary"], font=fonts["bold"], anchor="ra")
+            # كود وموديل
+            cell_x_model = right_x
+            draw.rectangle([(cell_x_model - model_col_w, y), (cell_x_model, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
+            draw.text((cell_x_model - 14, y + row_h // 2), fix_arabic_text(dev_title_txt), fill=palette["primary"], font=fonts["bold"], anchor="ra")
 
+            # IMEI
             cell_x_imei = cell_x_model - model_col_w
-            draw.rectangle([(cell_x_imei - imei_col_w, y), (cell_x_imei, y + row_h)], fill=row_bg, outline=palette["border"], width=1)
-            draw.text((cell_x_imei - imei_col_w // 2, y + 18), imei, fill=palette["text"], font=fonts["bold"], anchor="mm")
+            draw.rectangle([(cell_x_imei - imei_col_w, y), (cell_x_imei, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
+            draw.text((cell_x_imei - imei_col_w // 2, y + row_h // 2), imei, fill=palette["text"], font=fonts["bold"], anchor="mm")
 
+            # مواصفات
             cell_x_specs = cell_x_imei - imei_col_w
             specs_txt = f"{storage}GB{ram_txt}  (🔋{bat_txt})"
-            draw.rectangle([(cell_x_specs - specs_col_w, y), (cell_x_specs, y + row_h)], fill=row_bg, outline=palette["border"], width=1)
-            draw.text((cell_x_specs - specs_col_w // 2, y + 18), fix_arabic_text(specs_txt), fill=palette["secondary"], font=fonts["small"], anchor="mm")
+            draw.rectangle([(cell_x_specs - specs_col_w, y), (cell_x_specs, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
+            draw.text((cell_x_specs - specs_col_w // 2, y + row_h // 2), fix_arabic_text(specs_txt), fill=palette["secondary"], font=fonts["body"], anchor="mm")
 
+            # حالة وعلبة
             cell_x_cond = cell_x_specs - specs_col_w
             cond_summary = f"{cond} | {color} | {box_txt}"
-            draw.rectangle([(cell_x_cond - cond_col_w, y), (cell_x_cond, y + row_h)], fill=row_bg, outline=palette["border"], width=1)
-            draw.text((cell_x_cond - cond_col_w // 2, y + 18), fix_arabic_text(cond_summary), fill=palette["muted"], font=fonts["small"], anchor="mm")
+            draw.rectangle([(cell_x_cond - cond_col_w, y), (cell_x_cond, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
+            draw.text((cell_x_cond - cond_col_w // 2, y + row_h // 2), fix_arabic_text(cond_summary), fill=palette["text_muted"], font=fonts["small"], anchor="mm")
 
-            cell_x_price = cell_x_cond - cond_col_w
-            draw.rectangle([(table_left, y), (cell_x_price, y + row_h)], fill=row_bg, outline=palette["border"], width=1)
-            draw.text((table_left + price_col_w // 2, y + 18), fix_arabic_text(fmt_money(row_price)), fill=palette["text"], font=fonts["bold"], anchor="mm")
+            # سعر
+            draw.rectangle([(left_x, y), (left_x + price_col_w, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
+            draw.text((left_x + price_col_w // 2, y + row_h // 2), fix_arabic_text(fmt_money(row_price)), fill=palette["text"], font=fonts["bold"], anchor="mm")
 
             y += row_h
 
-    # سجل الدفعات (إن وجد)
-    if payments_list:
-        y += 16
-        draw.text((right_x, y), fix_arabic_text("سجل الدفعات والتحصيلات المسجلة:"), fill=palette["primary"], font=fonts["section"], anchor="ra")
-        y += 26
-        p_headers = ["المسؤول", "تاريخ الدفعة", "المبلغ المسدد", "م"]
-        p_widths = [240, 260, 240, 88]
-        curr_x = width - 36
-        for idx, ph in enumerate(p_headers):
-            w = p_widths[idx]
-            draw.rectangle([(curr_x - w, y), (curr_x, y + 30)], fill=palette["header_bg"], outline=palette["border"], width=1)
-            draw.text((curr_x - w // 2, y + 15), fix_arabic_text(ph), fill=palette["primary"], font=fonts["bold"], anchor="mm")
-            curr_x -= w
-        y += 30
-        for p_i, p_row in enumerate(payments_list[:8], start=1):
-            p_amt = fmt_money(p_row.get("payment_amount", 0))
-            p_date = str(p_row.get("payment_date_formatted") or p_row.get("date") or "-")
-            p_user = str(p_row.get("receiver_name") or p_row.get("payer_name") or p_row.get("user_name") or "-")
-            p_vals = [p_user, p_date, p_amt, str(p_i)]
-            curr_x = width - 36
-            for idx, pv in enumerate(p_vals):
+        y += 20
+
+    # إذا لم تكن هذه الصفحة الأخيرة:
+    if not is_final_page:
+        cont_y = min(y + 20, height - 230)
+        draw.rectangle([(margin_x, cont_y), (right_x, cont_y + 80)], fill=palette["header_bg"], outline=palette["secondary"], width=2)
+        draw.text((width // 2, cont_y + 40), fix_arabic_text(f"⬅️ بقية تفاصيل الفاتورة وملخص الحساب في الصفحة رقم {page_n + 1} من {tot_p}"), fill=palette["secondary"], font=fonts["huge"], anchor="mm")
+
+    else:
+        # الصفحة الأخيرة: سجل الدفعات (إن وجد) + ملخص الحساب + الشروط + الباركود + التوقيعات
+        if payments_list:
+            y += 8
+            draw.text((right_x, y), fix_arabic_text("سجل الدفعات والتحصيلات المسجلة:"), fill=palette["primary"], font=fonts["section"], anchor="ra")
+            y += 32
+            p_headers = ["المسؤول المستلم", "تاريخ ووقت الدفعة", "المبلغ المسدد", "م"]
+            p_widths = [int(content_width * 0.32), int(content_width * 0.34), int(content_width * 0.24), int(content_width * 0.10)]
+            curr_x = right_x
+            for idx, ph in enumerate(p_headers):
                 w = p_widths[idx]
-                draw.rectangle([(curr_x - w, y), (curr_x, y + 28)], fill="#ffffff", outline=palette["border"], width=1)
-                draw.text((curr_x - w // 2, y + 14), fix_arabic_text(pv), fill=palette["text"], font=fonts["small"], anchor="mm")
+                draw.rectangle([(curr_x - w, y), (curr_x, y + 36)], fill=palette["header_bg"], outline=palette["border_light"], width=1)
+                draw.text((curr_x - w // 2, y + 18), fix_arabic_text(ph), fill=palette["primary"], font=fonts["bold"], anchor="mm")
                 curr_x -= w
-            y += 28
+            y += 36
+            for p_i, p_row in enumerate(payments_list[:4], start=1):
+                p_amt = fmt_money(p_row.get("payment_amount", 0))
+                p_date = str(p_row.get("payment_date_formatted") or p_row.get("date") or "-")
+                p_user = str(p_row.get("receiver_name") or p_row.get("payer_name") or p_row.get("user_name") or "-")
+                p_vals = [p_user, p_date, p_amt, str(p_i)]
+                curr_x = right_x
+                for idx, pv in enumerate(p_vals):
+                    w = p_widths[idx]
+                    draw.rectangle([(curr_x - w, y), (curr_x, y + 34)], fill="#ffffff", outline=palette["border_light"], width=1)
+                    draw.text((curr_x - w // 2, y + 17), fix_arabic_text(pv), fill=palette["text"], font=fonts["body"], anchor="mm")
+                    curr_x -= w
+                y += 34
+            y += 12
 
-    # الملخص المالي
-    y += 22
-    orig_p = _clean_num_val(invoice_data.get("original_price", sell_p))
-    disc = _clean_num_val(invoice_data.get("discount", 0.0))
-    paid = _clean_num_val(invoice_data.get("cash_received") if invoice_data.get("cash_received") is not None else invoice_data.get("paid_amount", 0.0))
-    rem = _clean_num_val(invoice_data.get("remaining_balance") if invoice_data.get("remaining_balance") is not None else invoice_data.get("remaining_amount", 0.0))
-    supp_credit = _clean_num_val(invoice_data.get("supplier_credit", 0.0))
+        # الملخص المالي والشروط المعتمدة (صندوقين متجاورين يملآن الصفحة بتوازن هندسي)
+        orig_p = _clean_num_val(invoice_data.get("original_price", sell_p))
+        disc = _clean_num_val(invoice_data.get("discount", 0.0))
+        paid = _clean_num_val(invoice_data.get("cash_received") if invoice_data.get("cash_received") is not None else invoice_data.get("paid_amount", 0.0))
+        rem = _clean_num_val(invoice_data.get("remaining_balance") if invoice_data.get("remaining_balance") is not None else invoice_data.get("remaining_amount", 0.0))
+        supp_credit = _clean_num_val(invoice_data.get("supplier_credit", 0.0))
 
-    fin_box_height = 175 if supp_credit > 0 else 145
-    fin_box_top = y
-    fin_box_bottom = y + fin_box_height
-    draw.rectangle([(width - 420, fin_box_top), (width - 36, fin_box_bottom)], fill=palette["accent_box"], outline=palette["border"], width=2)
+        # حساب الموضع الرأسي لملء الصفحة وتجنب الفراغات الزائدة
+        fin_box_top = max(y + 20, height - 660)
+        fin_box_h = 264
+        fin_box_bottom = fin_box_top + fin_box_h
 
-    fy = fin_box_top + 18
-    if disc > 0 and not is_supp_doc:
-        draw.text((width - 50, fy), fix_arabic_text(f"السعر قبل الخصم: {fmt_money(orig_p)}   |   الخصم: {fmt_money(disc)}"), fill=palette["muted"], font=fonts["small"], anchor="ra")
-        fy += 26
+        half_w = (content_width - 24) // 2
+        fin_box_left = right_x - half_w
+        terms_box_right = fin_box_left - 24
 
-    tot_label = "إجمالي فاتورة المشتريات:" if is_supp_doc else "إجمالي المبلغ المطلوب:"
-    paid_label = "إجمالي المسدد للمورد:" if is_supp_doc else "إجمالي المدفوع نقداً:"
-    draw.text((width - 50, fy), fix_arabic_text(f"{tot_label}  {fmt_money(sell_p)}"), fill=palette["text"], font=fonts["bold"], anchor="ra")
-    fy += 30
-    draw.text((width - 50, fy), fix_arabic_text(f"{paid_label}  {fmt_money(paid)}"), fill=palette["primary"], font=fonts["bold"], anchor="ra")
-    fy += 30
-    if supp_credit > 0:
-        draw.text((width - 50, fy), fix_arabic_text(f"🌟 رصيد دائن لنا لدى المورد:  {fmt_money(supp_credit)}"), fill="#16a34a", font=fonts["bold"], anchor="ra")
-        fy += 28
-    if is_supp_doc:
-        rem_label = "المتبقي للمورد (الآجل):" if rem > 0 else "المتبقي للمورد (خالص بالكامل):"
-    else:
-        rem_label = "المتبقي (المديونية الآجلة):" if rem > 0 else "المتبقي (خالص بالكامل):"
-    draw.text((width - 50, fy), fix_arabic_text(f"{rem_label}  {fmt_money(rem)}"), fill=palette["secondary"] if rem > 0 else palette["primary"], font=fonts["section"], anchor="ra")
+        # 1. صندوق الملخص المالي (الجانب الأيمن)
+        draw.rectangle([(fin_box_left, fin_box_top), (right_x, fin_box_bottom)], fill=palette["total_box"], outline=palette["border"], width=2)
+        draw.rectangle([(fin_box_left, fin_box_top), (right_x, fin_box_top + 46)], fill=palette["header_bg"], outline=palette["border"], width=1)
+        draw.text((right_x - 18, fin_box_top + 23), fix_arabic_text("💰 ملخص الحساب المالي للفاتورة:"), fill=palette["primary"], font=fonts["section"], anchor="ra")
 
-    terms_box_right = width - 435
-    draw.rectangle([(36, fin_box_top), (terms_box_right, fin_box_bottom)], fill="#ffffff", outline=palette["border"], width=1)
-    draw.text((terms_box_right - 15, fin_box_top + 16), fix_arabic_text("الشروط والملاحظات المعتمدة:"), fill=palette["primary"], font=fonts["bold"], anchor="ra")
+        fy = fin_box_top + 62
+        if disc > 0 and not is_supp_doc:
+            draw.text((right_x - 22, fy), fix_arabic_text(f"السعر قبل الخصم: {fmt_money(orig_p)}  |  الخصم: {fmt_money(disc)}"), fill=palette["text_muted"], font=fonts["bold"], anchor="ra")
+            fy += 36
 
-    if is_supp_doc:
-        default_terms_text = (
-            "1. استلام ومطابقة البضاعة حسب المواصفات المتفق عليها.\n"
-            "2. أرقام السيريال IMEI معتمدة ومسجلة بدفاتر النظام.\n"
-            "3. أي رصيد دائن يسوى في الدفعات أو يسترد نقداً."
-        )
-    else:
-        default_terms_text = (
-            "1. البضاعة المباعة تخضع للمراجعة والضمان المتفق عليه.\n"
-            "2. الضمان لا يشمل الكسر أو السوائل أو سوء الاستخدام.\n"
-            "3. يرجى الاحتفاظ بالفاتورة لمراجعة المحل عند الحاجة."
-        )
+        tot_label = "إجمالي فاتورة المشتريات:" if is_supp_doc else "إجمالي المبلغ المستحق:"
+        paid_label = "إجمالي المسدد للمورد:" if is_supp_doc else "إجمالي المدفوع نقداً:"
+        draw.text((right_x - 22, fy), fix_arabic_text(f"{tot_label}  {fmt_money(sell_p)}"), fill=palette["text"], font=fonts["huge"], anchor="ra")
+        fy += 46
+        draw.text((right_x - 22, fy), fix_arabic_text(f"{paid_label}  {fmt_money(paid)}"), fill=palette["success"], font=fonts["huge"], anchor="ra")
+        fy += 46
+        if supp_credit > 0:
+            draw.text((right_x - 22, fy), fix_arabic_text(f"🌟 رصيد دائن لنا لدى المورد:  {fmt_money(supp_credit)}"), fill=palette["secondary"], font=fonts["section"], anchor="ra")
+            fy += 38
 
-    custom_terms = invoice_data.get("custom_terms", default_terms_text)
-    if supp_credit > 0:
-        custom_terms = f"ملاحظة هامة: يوجد رصيد دائن مستحق لنا لدى المورد بقيمة {fmt_money(supp_credit)} على هذه الفاتورة.\n" + custom_terms
-    sale_notes = (invoice_data.get("sale_notes") or invoice_data.get("notes") or "").strip()
-    if sale_notes and sale_notes not in custom_terms:
-        custom_terms = f"ملاحظة: {sale_notes}\n" + custom_terms
+        if is_supp_doc:
+            rem_label = "المتبقي للمورد (الآجل):" if rem > 0 else "المتبقي للمورد (خالص 🟢):"
+        else:
+            rem_label = "المتبقي (المديونية):" if rem > 0 else "المتبقي (خالص بالكامل 🟢):"
+        rem_color = palette["danger"] if rem > 0 else palette["success"]
+        draw.text((right_x - 22, fy), fix_arabic_text(f"{rem_label}  {fmt_money(rem)}"), fill=rem_color, font=fonts["huge"], anchor="ra")
 
-    ty = fin_box_top + 44
-    for line in custom_terms.split("\n")[:4]:
-        if line.strip():
-            draw.text((terms_box_right - 15, ty), fix_arabic_text(line.strip()), fill=palette["text"], font=fonts["small"], anchor="ra")
-            ty += 23
+        # 2. صندوق الشروط والضمان والملاحظات (الجانب الأيسر)
+        draw.rectangle([(left_x, fin_box_top), (terms_box_right, fin_box_bottom)], fill="#ffffff", outline=palette["border"], width=1)
+        draw.rectangle([(left_x, fin_box_top), (terms_box_right, fin_box_top + 46)], fill=palette["header_bg"], outline=palette["border"], width=1)
+        draw.text((terms_box_right - 18, fin_box_top + 23), fix_arabic_text("📝 الشروط والضمان والملاحظات المعتمدة:"), fill=palette["primary"], font=fonts["section"], anchor="ra")
 
-    # خفض موضع الباركود والـ QR للأسفل مع هوامش مريحة وقراءة فورية بالسكانر
-    bc_area_top = fin_box_bottom + 16
-    qr_pasted = False
-    if HAS_QR:
-        try:
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_M,
-                box_size=3,
-                border=1,
+        if is_supp_doc:
+            default_terms_text = (
+                "1. استلام ومطابقة البضاعة حسب المواصفات المتفق عليها.\n"
+                "2. أرقام السيريال IMEI معتمدة ومسجلة بدفاتر النظام.\n"
+                "3. أي رصيد دائن يسوى في الدفعات أو يسترد نقداً."
             )
-            qr_payload = f"{inv_code}|{cust_name}|{sell_p:.2f}|{inv_date}"
-            qr.add_data(qr_payload)
-            qr.make(fit=True)
-            qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-            qr_w, qr_h = 72, 72
-            qr_img = qr_img.resize((qr_w, qr_h), Image.Resampling.LANCZOS)
-            
-            qr_x = 48
-            qr_y = bc_area_top + 4
-            img.paste(qr_img, (qr_x, qr_y))
-            draw.rectangle([(qr_x, qr_y), (qr_x + qr_w, qr_y + qr_h)], outline=palette["border"], width=1)
-            qr_pasted = True
-        except Exception:
-            qr_pasted = False
+        else:
+            default_terms_text = (
+                "1. البضاعة المباعة تخضع للمراجعة والضمان المتفق عليه.\n"
+                "2. الضمان لا يشمل الكسر أو السوائل أو سوء الاستخدام.\n"
+                "3. يرجى الاحتفاظ بالفاتورة لمراجعة المحل عند الحاجة."
+            )
 
-    bc_w, bc_h = (220, 50) if qr_pasted else (280, 50)
-    bc_x = 138 if qr_pasted else 48
-    bc_y = bc_area_top + (15 if qr_pasted else 8)
-    draw.rectangle([(bc_x, bc_y), (bc_x + bc_w, bc_y + bc_h)], fill="#ffffff", outline=palette["border"], width=1)
-    curr_bx = bc_x + 12
-    pattern = [2, 1, 3, 1, 2, 2, 1, 3, 2, 1, 1, 2, 3, 1, 2, 1, 3, 2, 1, 2, 1, 3, 1, 2, 2, 1, 3, 1, 2]
-    for b_w in pattern:
-        if curr_bx + b_w > bc_x + bc_w - 12:
-            break
-        draw.rectangle([(curr_bx, bc_y + 4), (curr_bx + b_w, bc_y + bc_h - 18)], fill=palette["text"])
-        curr_bx += b_w + 2
-    draw.text((bc_x + bc_w // 2, bc_y + bc_h - 8), f"*{inv_code}*", fill=palette["muted"], font=fonts["small"], anchor="mm")
+        custom_terms = invoice_data.get("custom_terms", default_terms_text)
+        if supp_credit > 0:
+            custom_terms = f"ملاحظة: يوجد رصيد دائن مستحق لنا لدى المورد بقيمة {fmt_money(supp_credit)}.\n" + custom_terms
+        sale_notes = (invoice_data.get("sale_notes") or invoice_data.get("notes") or "").strip()
+        if sale_notes and sale_notes not in custom_terms:
+            custom_terms = f"ملاحظة إضافية: {sale_notes}\n" + custom_terms
 
-    # التوقيعات والتذييل
-    footer_y = max(bc_area_top + 88, height - 105)
-    draw.line([(45, footer_y), (width - 45, footer_y)], fill=palette["border"], width=1)
-    sig_label = "توقيع المورد / المستلم" if is_supp_doc else "توقيع العميل / المستلم"
-    draw.text((170, footer_y + 22), fix_arabic_text(sig_label), fill=palette["text"], font=fonts["bold"], anchor="ma")
-    draw.text((width - 170, footer_y + 22), fix_arabic_text("ختم وتوقيع محل هشام كيوان"), fill=palette["text"], font=fonts["bold"], anchor="ma")
+        ty = fin_box_top + 58
+        for line in custom_terms.split("\n")[:5]:
+            if line.strip():
+                draw.text((terms_box_right - 18, ty), fix_arabic_text(line.strip()), fill=palette["text"], font=fonts["bold"], anchor="ra")
+                ty += 34
 
-    draw.rectangle([(24, height - 52), (width - 24, height - 24)], fill=palette["table_hdr"])
-    draw.text((width // 2, height - 38), fix_arabic_text("شكراً لثقتكم بمحل هشام كيوان - نسعد بخدمتكم دائماً"), fill="#ffffff", font=fonts["bold"], anchor="mm")
+        # 3. الباركود و QR Code للتحقق الفوري
+        bc_area_top = fin_box_bottom + 16
+        qr_pasted = False
+        if HAS_QR:
+            try:
+                qr = qrcode.QRCode(
+                    version=1,
+                    error_correction=qrcode.constants.ERROR_CORRECT_M,
+                    box_size=3,
+                    border=1,
+                )
+                qr_payload = f"{inv_code}|{cust_name}|{sell_p:.2f}|{inv_date}"
+                qr.add_data(qr_payload)
+                qr.make(fit=True)
+                qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+                qr_w, qr_h = 78, 78
+                qr_img = qr_img.resize((qr_w, qr_h), Image.Resampling.LANCZOS)
+                
+                qr_x = left_x + 10
+                qr_y = bc_area_top + 2
+                img.paste(qr_img, (qr_x, qr_y))
+                draw.rectangle([(qr_x, qr_y), (qr_x + qr_w, qr_y + qr_h)], outline=palette["border"], width=1)
+                qr_pasted = True
+            except Exception:
+                qr_pasted = False
 
-    page_suffix = f"_p{invoice_data.get('page_num', 1)}" if invoice_data.get("total_pages", 1) > 1 else ""
+        bc_w, bc_h = (260, 52) if qr_pasted else (320, 52)
+        bc_x = (left_x + 105) if qr_pasted else (left_x + 10)
+        bc_y = bc_area_top + 14
+        draw.rectangle([(bc_x, bc_y), (bc_x + bc_w, bc_y + bc_h)], fill="#ffffff", outline=palette["border"], width=1)
+        curr_bx = bc_x + 14
+        pattern = [2, 1, 3, 1, 2, 2, 1, 3, 2, 1, 1, 2, 3, 1, 2, 1, 3, 2, 1, 2, 1, 3, 1, 2, 2, 1, 3, 1, 2, 2, 1, 3]
+        for b_w in pattern:
+            if curr_bx + b_w > bc_x + bc_w - 14:
+                break
+            draw.rectangle([(curr_bx, bc_y + 4), (curr_bx + b_w, bc_y + bc_h - 18)], fill=palette["text"])
+            curr_bx += b_w + 2
+        draw.text((bc_x + bc_w // 2, bc_y + bc_h - 9), f"*{inv_code}*", fill=palette["text_muted"], font=fonts["small"], anchor="mm")
+
+        draw.text((right_x - 10, bc_area_top + 32), fix_arabic_text("مسح الباركود للتحقق الفوري من صحة الفاتورة وسيريال الأجهزة في النظام"), fill=palette["text_muted"], font=fonts["bold"], anchor="ra")
+
+        # 4. التوقيعات الرسمية
+        sig_y = bc_area_top + 96
+        draw.line([(left_x + 20, sig_y), (right_x - 20, sig_y)], fill=palette["border_light"], width=1)
+        sig_label = "توقيع المورد / المستلم" if is_supp_doc else "توقيع العميل / المستلم"
+        draw.text((left_x + 180, sig_y + 24), fix_arabic_text(sig_label), fill=palette["text"], font=fonts["section"], anchor="ma")
+        draw.text((right_x - 180, sig_y + 24), fix_arabic_text("ختم وتوقيع محل هشام كيوان"), fill=palette["text"], font=fonts["section"], anchor="ma")
+
+    # 5. التذييل السفلي الثابت للورقة القياسية
+    footer_bar_top = height - 56
+    draw.rectangle([(24, footer_bar_top), (width - 24, height - 24)], fill=palette["table_hdr"])
+    draw.text((width // 2, footer_bar_top + 16), fix_arabic_text(f"شكراً لثقتكم بمحل هشام كيوان - نسعد بخدمتكم دائماً  •  صفحة {page_n} من {tot_p}"), fill="#ffffff", font=fonts["bold"], anchor="mm")
+
+    page_suffix = f"_p{page_n}" if tot_p > 1 else ""
     safe_id = str(sale_id).replace("/", "_").replace("\\", "_").replace("#", "")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     temp_dir = tempfile.gettempdir()
@@ -550,32 +634,41 @@ def generate_invoice_image(invoice_data):
 
 def generate_invoice_pages(invoice_data):
     """
-    توليد صفحات الفاتورة (صفحة واحدة أو عدة صفحات متسلسلة إذا تجاوزت الأجهزة 8 أجهزة).
-    تقسم الفواتير الطويلة وترقمها بوضوح (صفحة 1 من 3، صفحة 2 من 3...).
+    توليد صفحات الفاتورة المقسمة تلقائياً لمقاس A4 / A5 القياسي الموحد.
+    - إذا كانت الأجهزة حتى 6 أجهزة: تطبع في صفحة واحدة كاملة مع ملخص الحساب والشروط.
+    - إذا زادت الأجهزة عن 6: تقسم تلقائياً وبأناقة إلى صفحات متسلسلة (صفحة 1 من N...)
+      وتوضع بنود الأجهزة في الصفحات الأولى، بينما تظهر الصفحة الأخيرة الأجهزة المتبقية وملخص الحساب والشروط والتوقيعات.
     """
     devices_list = invoice_data.get("devices_list") or []
     if not devices_list and invoice_data.get("device"):
         devices_list = [invoice_data["device"]]
 
-    # إذا كانت القائمة 8 أجهزة أو أقل، تطبع في صفحة واحدة كاملة
-    if len(devices_list) <= 8:
+    if len(devices_list) <= 6:
         inv_copy = dict(invoice_data)
+        inv_copy["devices_list"] = devices_list
         inv_copy["page_num"] = 1
         inv_copy["total_pages"] = 1
         return [generate_invoice_image(inv_copy)]
 
-    # تجزئة الأجهزة إلى صفحات متتالية (8 أجهزة لكل صفحة)
-    chunk_size = 8
-    chunks = [devices_list[i:i + chunk_size] for i in range(0, len(devices_list), chunk_size)]
-    total_pages = len(chunks)
+    pages_items = []
+    rem_devices = list(devices_list)
+
+    while len(rem_devices) > 6:
+        chunk = rem_devices[:12]
+        rem_devices = rem_devices[12:]
+        pages_items.append(chunk)
+
+    if rem_devices:
+        pages_items.append(rem_devices)
+
+    total_pages = len(pages_items)
     generated_pages = []
 
-    for idx, chunk in enumerate(chunks, start=1):
+    for idx, chunk in enumerate(pages_items, start=1):
         page_data = dict(invoice_data)
         page_data["devices_list"] = chunk
         page_data["page_num"] = idx
         page_data["total_pages"] = total_pages
-        # الصفحة الأخيرة فقط تحتفظ بسجل الدفعات والملاحظات الختامية إذا تعددت الصفحات
         if idx < total_pages:
             page_data["payments_list"] = []
         p_path = generate_invoice_image(page_data)
