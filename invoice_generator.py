@@ -17,9 +17,6 @@ try:
 except ImportError:
     HAS_QR = False
 
-
-# المقاس القياسي الموحد لصفحات A4 و A5 بدقة فائقة 150 DPI (نسبة 1:1.414 القياسية)
-# 1240 × 1754 بكسل - يملأ الورقة بامتياز وتوازن وتوزيع متقن للمساحة بدون فراغات
 PAGE_WIDTH = 1240
 PAGE_HEIGHT = 1754
 
@@ -42,7 +39,6 @@ def fmt_money(val):
 
 
 def fix_arabic_text(text):
-    """إعادة تشكيل النص العربي مع الحفاظ التام على ترتيب الأرقام والكلمات اللاتينية."""
     if text is None:
         return ""
     s = str(text).replace('\u200f', '').replace('\u200e', '').replace('\u202b', '').replace('\u202c', '').strip()
@@ -120,8 +116,8 @@ def _load_fonts(scale=1.0):
 def _get_palette(style_name="color"):
     if style_name == "burgundy":
         return {
-            "primary": "#881337",        # عنابي غامق ملكي
-            "secondary": "#be123c",      # عنابي متوسط
+            "primary": "#881337",
+            "secondary": "#be123c",
             "accent": "#9f1239",
             "header_bg": "#fff1f2",
             "table_hdr": "#881337",
@@ -139,7 +135,7 @@ def _get_palette(style_name="color"):
         }
     elif style_name == "grayscale":
         return {
-            "primary": "#0f172a",        # أسود / رمادي داكن عالي التباين
+            "primary": "#0f172a",
             "secondary": "#334155",
             "accent": "#1e293b",
             "header_bg": "#f8fafc",
@@ -156,11 +152,11 @@ def _get_palette(style_name="color"):
             "success": "#0f172a",
             "gold": "#334155"
         }
-    else:  # Default: أزرق ملكي فاخر
+    else:
         return {
-            "primary": "#0f2b5c",        # أزرق كحلي فخم
-            "secondary": "#1d4ed8",      # أزرق ملكي زاهي
-            "accent": "#0284c7",         # سماوي عميق
+            "primary": "#0f2b5c",
+            "secondary": "#1d4ed8",
+            "accent": "#0284c7",
             "header_bg": "#f0f7ff",
             "table_hdr": "#0f2b5c",
             "table_hdr_text": "#ffffff",
@@ -178,10 +174,6 @@ def _get_palette(style_name="color"):
 
 
 def generate_invoice_image(invoice_data):
-    """
-    توليد صورة فاتورة قياسية بمقاس A4 / A5 متناسقة تماماً ومستغلة لكامل المساحة.
-    توزيع متقن وعالي الدقة للخطوط والألوان والسيريال والملخص المالي والتوقيعات.
-    """
     if not os.path.exists("invoices"):
         try:
             os.makedirs("invoices", exist_ok=True)
@@ -202,7 +194,7 @@ def generate_invoice_image(invoice_data):
     right_x = width - margin_x
     left_x = margin_x
 
-    # 1. إطار الورقة الخارجي الملكي (Double Border)
+    # 1. إطار الورقة الخارجي الملكي
     draw.rectangle([(14, 14), (width - 14, height - 14)], outline=palette["border"], width=3)
     draw.rectangle([(22, 22), (width - 22, height - 22)], outline=palette["border"], width=1)
 
@@ -211,7 +203,6 @@ def generate_invoice_image(invoice_data):
     header_h = 138
     draw.rectangle([(margin_x, header_top), (right_x, header_top + header_h)], fill=palette["header_bg"], outline=palette["border"], width=2)
 
-    # إضافة شعار المتجر إذا وجد
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
@@ -222,8 +213,11 @@ def generate_invoice_image(invoice_data):
 
     doc_type = invoice_data.get("doc_type", "SALE")
     is_supp_doc = doc_type in ("SUPPLIER_INVOICE", "SUPPLIER_DEBT")
+    is_archived = bool(invoice_data.get("is_archived"))
 
-    if doc_type == "CUSTOMER_DEBT":
+    if is_archived:
+        sub_label = "فاتورة مؤرشفة وسجل تاريخي معتمد (خالص بالكامل 🗄️)"
+    elif doc_type == "CUSTOMER_DEBT":
         sub_label = "بيان مديونية وحساب عميل معتمد"
     elif is_supp_doc:
         sub_label = "فاتورة مشتريات وتوريد بضاعة معتمدة"
@@ -234,7 +228,7 @@ def generate_invoice_image(invoice_data):
     draw.text((width // 2, header_top + 84), fix_arabic_text(sub_label), fill=palette["secondary"], font=fonts["subtitle"], anchor="mm")
     draw.text((width // 2, header_top + 116), fix_arabic_text("خدمة عملاء معتمدة  •  أجهزة أصلية ومفحوصة  •  ضمان صريح ومسجل بالنظام"), fill=palette["text_muted"], font=fonts["small"], anchor="mm")
 
-    # 3. بطاقة بيانات الفاتورة والأطراف (العميل / المورد)
+    # 3. بطاقة بيانات الفاتورة
     sale_id = invoice_data.get("sale_id") or invoice_data.get("invoice_id") or "-"
     if is_supp_doc:
         party_label = "المورد / التاجر:"
@@ -257,16 +251,14 @@ def generate_invoice_image(invoice_data):
     draw.rectangle([(margin_x, card_y), (right_x, card_y + card_h)], fill="#ffffff", outline=palette["border"], width=1)
     draw.line([(margin_x + 12, card_y + 60), (right_x - 12, card_y + 60)], fill=palette["border_light"], width=1)
 
-    # السطر الأول من بطاقة البيانات: كود الفاتورة والصفحة والتاريخ
     draw.text((right_x - 20, card_y + 30), fix_arabic_text(f"كود الفاتورة: {inv_code}  (#{sale_id})"), fill=palette["primary"], font=fonts["section"], anchor="ra")
-    
+
     page_badge_txt = f"صفحة {page_n} من {tot_p}"
     draw.rectangle([(width // 2 - 110, card_y + 13), (width // 2 + 110, card_y + 47)], fill=palette["header_bg"], outline=palette["secondary"], width=1)
     draw.text((width // 2, card_y + 30), fix_arabic_text(page_badge_txt), fill=palette["secondary"], font=fonts["bold"], anchor="mm")
 
     draw.text((left_x + 20, card_y + 30), fix_arabic_text(f"التاريخ: {inv_date}"), fill=palette["text"], font=fonts["section"], anchor="la")
 
-    # السطر الثاني: اسم العميل / المورد بالخط العريض، ورقم الهاتف والمسؤول
     draw.text((right_x - 20, card_y + 92), fix_arabic_text(f"{party_label} {cust_name}"), fill=palette["text"], font=fonts["huge"], anchor="ra")
     phone_seller_txt = f"الهاتف: {cust_phone}" + (f"  |  المسؤول: {seller_name}" if seller_name else "")
     draw.text((left_x + 20, card_y + 92), fix_arabic_text(phone_seller_txt), fill=palette["text_muted"], font=fonts["bold"], anchor="la")
@@ -284,7 +276,6 @@ def generate_invoice_image(invoice_data):
 
     y = card_y + card_h + 20
 
-    # في حال وجود جهاز واحد فقط في الفاتورة (النمط الأكثر استخداماً):
     if len(devices_list) == 1 and tot_p == 1:
         dev = devices_list[0]
         dev_id = dev.get("id") or dev.get("device_id") or "-"
@@ -322,18 +313,15 @@ def generate_invoice_image(invoice_data):
         card_h_single = 350 if accessories and accessories not in ("بدون", "-") else 300
         draw.rectangle([(margin_x, y), (right_x, y + card_h_single)], fill="#ffffff", outline=palette["primary"], width=2)
 
-        # ترويسة بطاقة الجهاز
         draw.rectangle([(margin_x, y), (right_x, y + 66)], fill=palette["header_bg"], outline=palette["border"], width=1)
         draw.text((right_x - 18, y + 33), fix_arabic_text(f"📱 نوع وموديل الجهاز: {dev_full_name}  (كود: #{dev_id})"), fill=palette["primary"], font=fonts["section"], anchor="ra")
         draw.text((left_x + 18, y + 33), fix_arabic_text(f"{price_col_title}: {fmt_money(row_price)}"), fill=palette["secondary"], font=fonts["huge"], anchor="la")
 
-        # خانة السيريال IMEI بخط عريض وواضح جداً
         y_imei = y + 76
         draw.rectangle([(margin_x + 14, y_imei), (right_x - 14, y_imei + 56)], fill=palette["card_bg"], outline=palette["border_light"], width=1)
         draw.text((right_x - 24, y_imei + 28), fix_arabic_text("السيريال المعتمد (IMEI):"), fill=palette["text"], font=fonts["bold"], anchor="ra")
         draw.text((left_x + 24, y_imei + 28), imei, fill=palette["primary"], font=fonts["huge"], anchor="la")
 
-        # شبكة المواصفات الفنية
         y_badges = y_imei + 66
         badge_w = (content_width - 40) // 3
         badge_row1 = [
@@ -367,7 +355,6 @@ def generate_invoice_image(invoice_data):
         y += card_h_single + 24
 
     else:
-        # جدول رسمي عريض وواسع لعدة أجهزة بتنسيق فخم عالي الوضوح
         price_col_w = int(content_width * 0.16)
         cond_col_w = int(content_width * 0.17)
         specs_col_w = int(content_width * 0.19)
@@ -425,29 +412,24 @@ def generate_invoice_image(invoice_data):
 
             row_bg = "#ffffff" if d_idx % 2 == 0 else "#f8fafc"
 
-            # كود وموديل
             cell_x_model = right_x
             draw.rectangle([(cell_x_model - model_col_w, y), (cell_x_model, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
             draw.text((cell_x_model - 14, y + row_h // 2), fix_arabic_text(dev_title_txt), fill=palette["primary"], font=fonts["bold"], anchor="ra")
 
-            # IMEI
             cell_x_imei = cell_x_model - model_col_w
             draw.rectangle([(cell_x_imei - imei_col_w, y), (cell_x_imei, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
             draw.text((cell_x_imei - imei_col_w // 2, y + row_h // 2), imei, fill=palette["text"], font=fonts["bold"], anchor="mm")
 
-            # مواصفات
             cell_x_specs = cell_x_imei - imei_col_w
             specs_txt = f"{storage}GB{ram_txt}  (🔋{bat_txt})"
             draw.rectangle([(cell_x_specs - specs_col_w, y), (cell_x_specs, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
             draw.text((cell_x_specs - specs_col_w // 2, y + row_h // 2), fix_arabic_text(specs_txt), fill=palette["secondary"], font=fonts["body"], anchor="mm")
 
-            # حالة وعلبة
             cell_x_cond = cell_x_specs - specs_col_w
             cond_summary = f"{cond} | {color} | {box_txt}"
             draw.rectangle([(cell_x_cond - cond_col_w, y), (cell_x_cond, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
             draw.text((cell_x_cond - cond_col_w // 2, y + row_h // 2), fix_arabic_text(cond_summary), fill=palette["text_muted"], font=fonts["small"], anchor="mm")
 
-            # سعر
             draw.rectangle([(left_x, y), (left_x + price_col_w, y + row_h)], fill=row_bg, outline=palette["border_light"], width=1)
             draw.text((left_x + price_col_w // 2, y + row_h // 2), fix_arabic_text(fmt_money(row_price)), fill=palette["text"], font=fonts["bold"], anchor="mm")
 
@@ -455,14 +437,12 @@ def generate_invoice_image(invoice_data):
 
         y += 20
 
-    # إذا لم تكن هذه الصفحة الأخيرة:
     if not is_final_page:
         cont_y = min(y + 20, height - 230)
         draw.rectangle([(margin_x, cont_y), (right_x, cont_y + 80)], fill=palette["header_bg"], outline=palette["secondary"], width=2)
         draw.text((width // 2, cont_y + 40), fix_arabic_text(f"⬅️ بقية تفاصيل الفاتورة وملخص الحساب في الصفحة رقم {page_n + 1} من {tot_p}"), fill=palette["secondary"], font=fonts["huge"], anchor="mm")
 
     else:
-        # الصفحة الأخيرة: سجل الدفعات (إن وجد) + ملخص الحساب + الشروط + الباركود + التوقيعات
         if payments_list:
             y += 8
             draw.text((right_x, y), fix_arabic_text("سجل الدفعات والتحصيلات المسجلة:"), fill=palette["primary"], font=fonts["section"], anchor="ra")
@@ -490,14 +470,12 @@ def generate_invoice_image(invoice_data):
                 y += 34
             y += 12
 
-        # الملخص المالي والشروط المعتمدة (صندوقين متجاورين يملآن الصفحة بتوازن هندسي)
         orig_p = _clean_num_val(invoice_data.get("original_price", sell_p))
         disc = _clean_num_val(invoice_data.get("discount", 0.0))
         paid = _clean_num_val(invoice_data.get("cash_received") if invoice_data.get("cash_received") is not None else invoice_data.get("paid_amount", 0.0))
         rem = _clean_num_val(invoice_data.get("remaining_balance") if invoice_data.get("remaining_balance") is not None else invoice_data.get("remaining_amount", 0.0))
         supp_credit = _clean_num_val(invoice_data.get("supplier_credit", 0.0))
 
-        # حساب الموضع الرأسي لملء الصفحة وتجنب الفراغات الزائدة
         fin_box_top = max(y + 20, height - 660)
         fin_box_h = 264
         fin_box_bottom = fin_box_top + fin_box_h
@@ -506,7 +484,6 @@ def generate_invoice_image(invoice_data):
         fin_box_left = right_x - half_w
         terms_box_right = fin_box_left - 24
 
-        # 1. صندوق الملخص المالي (الجانب الأيمن)
         draw.rectangle([(fin_box_left, fin_box_top), (right_x, fin_box_bottom)], fill=palette["total_box"], outline=palette["border"], width=2)
         draw.rectangle([(fin_box_left, fin_box_top), (right_x, fin_box_top + 46)], fill=palette["header_bg"], outline=palette["border"], width=1)
         draw.text((right_x - 18, fin_box_top + 23), fix_arabic_text("💰 ملخص الحساب المالي للفاتورة:"), fill=palette["primary"], font=fonts["section"], anchor="ra")
@@ -533,7 +510,6 @@ def generate_invoice_image(invoice_data):
         rem_color = palette["danger"] if rem > 0 else palette["success"]
         draw.text((right_x - 22, fy), fix_arabic_text(f"{rem_label}  {fmt_money(rem)}"), fill=rem_color, font=fonts["huge"], anchor="ra")
 
-        # 2. صندوق الشروط والضمان والملاحظات (الجانب الأيسر)
         draw.rectangle([(left_x, fin_box_top), (terms_box_right, fin_box_bottom)], fill="#ffffff", outline=palette["border"], width=1)
         draw.rectangle([(left_x, fin_box_top), (terms_box_right, fin_box_top + 46)], fill=palette["header_bg"], outline=palette["border"], width=1)
         draw.text((terms_box_right - 18, fin_box_top + 23), fix_arabic_text("📝 الشروط والضمان والملاحظات المعتمدة:"), fill=palette["primary"], font=fonts["section"], anchor="ra")
@@ -564,7 +540,6 @@ def generate_invoice_image(invoice_data):
                 draw.text((terms_box_right - 18, ty), fix_arabic_text(line.strip()), fill=palette["text"], font=fonts["bold"], anchor="ra")
                 ty += 34
 
-        # 3. الباركود و QR Code للتحقق الفوري
         bc_area_top = fin_box_bottom + 16
         qr_pasted = False
         if HAS_QR:
@@ -581,7 +556,7 @@ def generate_invoice_image(invoice_data):
                 qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
                 qr_w, qr_h = 78, 78
                 qr_img = qr_img.resize((qr_w, qr_h), Image.Resampling.LANCZOS)
-                
+
                 qr_x = left_x + 10
                 qr_y = bc_area_top + 2
                 img.paste(qr_img, (qr_x, qr_y))
@@ -605,14 +580,12 @@ def generate_invoice_image(invoice_data):
 
         draw.text((right_x - 10, bc_area_top + 32), fix_arabic_text("مسح الباركود للتحقق الفوري من صحة الفاتورة وسيريال الأجهزة في النظام"), fill=palette["text_muted"], font=fonts["bold"], anchor="ra")
 
-        # 4. التوقيعات الرسمية
         sig_y = bc_area_top + 96
         draw.line([(left_x + 20, sig_y), (right_x - 20, sig_y)], fill=palette["border_light"], width=1)
         sig_label = "توقيع المورد / المستلم" if is_supp_doc else "توقيع العميل / المستلم"
         draw.text((left_x + 180, sig_y + 24), fix_arabic_text(sig_label), fill=palette["text"], font=fonts["section"], anchor="ma")
         draw.text((right_x - 180, sig_y + 24), fix_arabic_text("ختم وتوقيع محل هشام كيوان"), fill=palette["text"], font=fonts["section"], anchor="ma")
 
-    # 5. التذييل السفلي الثابت للورقة القياسية
     footer_bar_top = height - 56
     draw.rectangle([(24, footer_bar_top), (width - 24, height - 24)], fill=palette["table_hdr"])
     draw.text((width // 2, footer_bar_top + 16), fix_arabic_text(f"شكراً لثقتكم بمحل هشام كيوان - نسعد بخدمتكم دائماً  •  صفحة {page_n} من {tot_p}"), fill="#ffffff", font=fonts["bold"], anchor="mm")
@@ -633,12 +606,6 @@ def generate_invoice_image(invoice_data):
 
 
 def generate_invoice_pages(invoice_data):
-    """
-    توليد صفحات الفاتورة المقسمة تلقائياً لمقاس A4 / A5 القياسي الموحد.
-    - إذا كانت الأجهزة حتى 6 أجهزة: تطبع في صفحة واحدة كاملة مع ملخص الحساب والشروط.
-    - إذا زادت الأجهزة عن 6: تقسم تلقائياً وبأناقة إلى صفحات متسلسلة (صفحة 1 من N...)
-      وتوضع بنود الأجهزة في الصفحات الأولى، بينما تظهر الصفحة الأخيرة الأجهزة المتبقية وملخص الحساب والشروط والتوقيعات.
-    """
     devices_list = invoice_data.get("devices_list") or []
     if not devices_list and invoice_data.get("device"):
         devices_list = [invoice_data["device"]]

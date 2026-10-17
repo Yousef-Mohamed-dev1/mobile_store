@@ -117,7 +117,7 @@ class DatabaseManager:
                     cur.execute("ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS supplier_credit NUMERIC(12, 2) DEFAULT 0.00;")
                     cur.execute("ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS notes TEXT;")
 
-                    # 4. جدول الأجهزة
+                    # 4. جدول الأجهزة (مع دعم الأرشفة is_archived)
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS devices (
                             id SERIAL PRIMARY KEY,
@@ -129,6 +129,8 @@ class DatabaseManager:
                             accessories TEXT,
                             device_condition VARCHAR(20) DEFAULT 'مستعمل',
                             has_box BOOLEAN DEFAULT FALSE,
+                            color VARCHAR(50) DEFAULT 'أسود',
+                            has_tax BOOLEAN DEFAULT FALSE,
                             imei_serial VARCHAR(100) NOT NULL,
                             buy_price NUMERIC(12, 2) NOT NULL,
                             initial_selling_price NUMERIC(12, 2) DEFAULT NULL,
@@ -137,6 +139,9 @@ class DatabaseManager:
                             notes TEXT,
                             is_sold BOOLEAN DEFAULT FALSE,
                             is_deleted BOOLEAN DEFAULT FALSE,
+                            is_archived BOOLEAN DEFAULT FALSE,
+                            archived_at TIMESTAMP DEFAULT NULL,
+                            archived_by_user_id INT REFERENCES users(id),
                             buy_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             created_by_user_id INT REFERENCES users(id)
                         );
@@ -151,6 +156,9 @@ class DatabaseManager:
                     cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS notes TEXT;")
                     cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS is_sold BOOLEAN DEFAULT FALSE;")
                     cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;")
+                    cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;")
+                    cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP DEFAULT NULL;")
+                    cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS archived_by_user_id INT REFERENCES users(id);")
                     cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS created_by_user_id INT REFERENCES users(id);")
                     cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS color VARCHAR(50) DEFAULT 'أسود';")
                     cur.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS has_tax BOOLEAN DEFAULT FALSE;")
@@ -162,8 +170,9 @@ class DatabaseManager:
                         cur.execute("UPDATE devices SET color = 'أسود' WHERE color IS NULL OR color = '' OR color = 'بدون';")
                         cur.execute("UPDATE devices SET has_tax = FALSE WHERE has_tax IS NULL;")
                         cur.execute("UPDATE devices SET has_box = FALSE WHERE has_box IS NULL;")
+                        cur.execute("UPDATE devices SET is_archived = FALSE WHERE is_archived IS NULL;")
                         cur.execute("UPDATE supplier_invoices SET supplier_credit = 0.00 WHERE supplier_credit IS NULL;")
-                        
+
                         # للأجهزة القديمة المباعة: ضبط سعر الشراء وسعر البيع المبدئي
                         cur.execute("""
                             UPDATE devices d
@@ -172,7 +181,7 @@ class DatabaseManager:
                             FROM sales s
                             WHERE d.id = s.device_id AND (d.initial_selling_price IS NULL OR d.initial_selling_price = 0 OR d.buy_price IS NULL OR d.buy_price = 0);
                         """)
-                        
+
                         # للأجهزة بالمخزون: ضبط سعر البيع المبدئي مساوياً لسعر الشراء إذا كان فارغاً
                         cur.execute("""
                             UPDATE devices
@@ -182,6 +191,9 @@ class DatabaseManager:
                         cur.execute("UPDATE devices SET buy_price = 0.00 WHERE buy_price IS NULL;")
                     except Exception as _mig_err:
                         print(f"Notice: Legacy data migration: {_mig_err}")
+
+                    # ترقية فواتير الموردين القديمة المجمعة: فصل كل جهاز في فاتورته المستقلة المعلمة كمدفوعة
+                    self._migrate_legacy_multi_device_invoices(cur)
 
                     # 6. جدول المبيعات
                     cur.execute("""
@@ -247,15 +259,18 @@ class DatabaseManager:
                         CREATE TABLE IF NOT EXISTS capital_transactions (
                             id SERIAL PRIMARY KEY,
                             amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
-                            transaction_type VARCHAR(20) NOT NULL DEFAULT 'INJECTION',
+                            transaction_type VARCHAR(50) NOT NULL DEFAULT 'INJECTION',
                             notes TEXT,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             created_by_user_id INT REFERENCES users(id)
                         );
                     """)
-                    cur.execute("ALTER TABLE capital_transactions ADD COLUMN IF NOT EXISTS transaction_type VARCHAR(20) DEFAULT 'INJECTION';")
+                    cur.execute("ALTER TABLE capital_transactions ADD COLUMN IF NOT EXISTS transaction_type VARCHAR(50) DEFAULT 'INJECTION';")
+                    cur.execute("ALTER TABLE capital_transactions ALTER COLUMN transaction_type TYPE VARCHAR(50);")
+                    cur.execute("ALTER TABLE capital_transactions DROP CONSTRAINT IF EXISTS capital_transactions_transaction_type_check;")
                     cur.execute("ALTER TABLE capital_transactions ADD COLUMN IF NOT EXISTS notes TEXT;")
                     cur.execute("ALTER TABLE capital_transactions ADD COLUMN IF NOT EXISTS created_by_user_id INT REFERENCES users(id);")
+                    cur.execute("ALTER TABLE supplier_invoices ALTER COLUMN status TYPE VARCHAR(30);")
 
                     # 10. جدول سجل التدقيق الدقيق للعمليات والرقابة المالية (Audit Log)
                     cur.execute("""
@@ -279,6 +294,7 @@ class DatabaseManager:
                     # إنشاء فهارس (Indexes) للأداء العالي وسرعة البحث
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_devices_imei ON devices(imei_serial);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_devices_inv_id ON devices(invoice_id);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_devices_archived ON devices(is_archived);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_device_id ON sales(device_id);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action_type);")
 
@@ -294,6 +310,70 @@ class DatabaseManager:
                     conn.commit()
         except Exception as e:
             print(f"Table verification notice: {e}")
+
+    def _migrate_legacy_multi_device_invoices(self, cur):
+        """
+        ترقية الفواتير القديمة المجمعة:
+        فصل كل جهاز كان مسجلاً في فاتورة متعددة الأجهزة إلى فاتورة مستقلة خاصة به
+        تكون مدفوعة بالكامل (PAID) بدون تدمير أي بيانات سابقة أو تغيير مالي.
+        """
+        try:
+            # البحث عن الفواتير القديمة التي تحتوي على أكثر من جهاز
+            cur.execute("""
+                SELECT invoice_id, COUNT(*) as dev_count
+                FROM devices
+                WHERE invoice_id IS NOT NULL
+                GROUP BY invoice_id
+                HAVING COUNT(*) > 1;
+            """)
+            multi_invs = cur.fetchall()
+
+            for row in multi_invs:
+                old_inv_id = row['invoice_id']
+                cur.execute("SELECT * FROM supplier_invoices WHERE id = %s;", (old_inv_id,))
+                orig_inv = cur.fetchone()
+                if not orig_inv:
+                    continue
+
+                # جلب جميع أجهزة هذه الفاتورة
+                cur.execute("SELECT id, buy_price, supplier_id, buy_date, category, model, imei_serial FROM devices WHERE invoice_id = %s ORDER BY id ASC;", (old_inv_id,))
+                devs = cur.fetchall()
+
+                # الجهاز الأول يحتفظ بالفاتورة القديمة مع ضبط مبالغها لتطابق سعره
+                first_dev = devs[0]
+                first_bp = float(first_dev['buy_price'] or 0)
+                cur.execute("""
+                    UPDATE supplier_invoices
+                    SET total_amount = %s, paid_amount = %s, remaining_amount = 0.00, status = 'PAID',
+                        notes = COALESCE(notes, '') || ' (فاتورة مستقلة للجهاز #' || %s || ')'
+                    WHERE id = %s;
+                """, (first_bp, first_bp, first_dev['id'], old_inv_id))
+
+                # بقية الأجهزة تنشأ لها فواتير مستقلة جديدة مطابقة لسعر كل جهاز وتعين كـ PAID
+                for d in devs[1:]:
+                    d_bp = float(d['buy_price'] or 0)
+                    d_supp = d['supplier_id'] or orig_inv.get('supplier_id')
+                    d_date = (d.get('buy_date') or orig_inv.get('invoice_date') or datetime.now()).strftime("%Y-%m-%d") if hasattr(d.get('buy_date'), 'strftime') else str(d.get('buy_date') or orig_inv.get('invoice_date')).split()[0]
+                    d_notes = f"فاتورة شراء مستقلة للجهاز #{d['id']}: {d.get('category')} {d.get('model')} (سيريال: {d.get('imei_serial') or '-'})"
+
+                    cur.execute("""
+                        INSERT INTO supplier_invoices (supplier_id, total_amount, paid_amount, remaining_amount, supplier_credit, status, invoice_date, created_by_user_id, notes)
+                        VALUES (%s, %s, %s, 0.00, 0.00, 'PAID', %s::date, %s, %s)
+                        RETURNING id;
+                    """, (d_supp, d_bp, d_bp, d_date, orig_inv.get('created_by_user_id'), d_notes))
+                    new_inv_id = cur.fetchone()['id']
+
+                    # تحديث الجهاز ليرتبط بفاتورته المستقلة الجديدة
+                    cur.execute("UPDATE devices SET invoice_id = %s WHERE id = %s;", (new_inv_id, d['id']))
+
+                    # تسجيل دفعة سداد تاريخية مطابقة
+                    cur.execute("""
+                        INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id, payment_date)
+                        VALUES (%s, %s, %s, %s, %s, %s::timestamp);
+                    """, (new_inv_id, d_supp, d_bp, f"سداد كامل مسجل تاريخياً للجهاز #{d['id']}", orig_inv.get('created_by_user_id'), d.get('buy_date') or datetime.now()))
+
+        except Exception as ex:
+            print(f"Notice: legacy multi-device migration error: {ex}")
 
     def add_audit_log(self, user_id, user_name, action_type, entity_type, entity_id, description, old_values=None, new_values=None):
         try:
@@ -353,7 +433,7 @@ class DatabaseManager:
                         elif action_type == 'COLLECT_DEBT':
                             q += " AND a.action_type = 'COLLECT_DEBT'"
                         elif action_type == 'PAY_SUPPLIER':
-                            q += " AND a.action_type = 'PAY_SUPPLIER'"
+                            q += " AND a.action_type IN ('PAY_SUPPLIER', 'PAY_SUPPLIER_BULK')"
                         elif action_type == 'CLAIM_SUPPLIER_CREDIT':
                             q += " AND a.action_type = 'CLAIM_SUPPLIER_CREDIT'"
                         elif action_type == 'ADD_DEVICE':
@@ -362,6 +442,8 @@ class DatabaseManager:
                             q += " AND a.action_type IN ('EDIT_DEVICE', 'UPDATE_PRICE_BELOW', 'UPDATE_PRICE_ABOVE')"
                         elif action_type == 'DELETE_DEVICE':
                             q += " AND a.action_type = 'DELETE_DEVICE'"
+                        elif action_type == 'ARCHIVE_DEVICE':
+                            q += " AND a.action_type IN ('ARCHIVE_DEVICE', 'UNARCHIVE_DEVICE')"
                         elif action_type == 'CAPITAL':
                             q += " AND a.action_type IN ('CAPITAL_INJECTION', 'CAPITAL_WITHDRAWAL', 'DELETE_CAPITAL_TX', 'SUPPLIER_REFUND')"
                         elif action_type == 'SUPPLIER':
@@ -670,19 +752,22 @@ class DatabaseManager:
                     if category and category.strip():
                         cur.execute("""
                             SELECT DISTINCT model FROM devices
-                            WHERE category ILIKE %s AND COALESCE(is_deleted, FALSE) = FALSE
+                            WHERE category ILIKE %s AND COALESCE(is_deleted, FALSE) = FALSE AND COALESCE(is_archived, FALSE) = FALSE
                             ORDER BY model ASC LIMIT 40;
                         """, (f"%{category.strip()}%",))
                     else:
                         cur.execute("""
                             SELECT DISTINCT model FROM devices
-                            WHERE COALESCE(is_deleted, FALSE) = FALSE
+                            WHERE COALESCE(is_deleted, FALSE) = FALSE AND COALESCE(is_archived, FALSE) = FALSE
                             ORDER BY model ASC LIMIT 40;
                         """)
                     return [r['model'] for r in cur.fetchall() if r.get('model')]
         except Exception:
             return []
 
+    # =========================================================================
+    # إضافة الأجهزة مع إنشاء فاتورة مورد مستقلة تماماً لكل جهاز (Per-Device Invoice)
+    # =========================================================================
     def add_device(self, category, model, storage="", ram="", battery=None, accessories="", imei="", buy_price=0.0, supplier_id=None, notes="", user_id=None, device_condition="مستعمل", has_box=False, paid_amount=None, color="أسود", has_tax=False, initial_selling_price=None, custom_date=None):
         if not supplier_id:
             raise Exception("يجب اختيار المورد أولاً لإتمام عملية الشراء!")
@@ -716,63 +801,37 @@ class DatabaseManager:
                     if dup:
                         raise Exception(f"السيريال ({clean_imei}) مسجل بالفعل بالمخزون للجهاز #{dup['id']} ({dup['model']})!")
 
-                inv_id = None
                 c_date = custom_date.strip() if (custom_date and str(custom_date).strip()) else None
-                inv_date_target = c_date.split()[0] if c_date else None
+                inv_date_target = c_date.split()[0] if c_date else datetime.now().strftime("%Y-%m-%d")
 
-                # تحسين منطقي: نبحث فقط عن فاتورة مفتوحة (غير خالصة) لنفس اليوم لعدم إعادة فتح الفواتير المسددة بالكامل
-                if c_date:
-                    cur.execute("""
-                        SELECT id, total_amount, paid_amount, remaining_amount, supplier_credit 
-                        FROM supplier_invoices 
-                        WHERE supplier_id = %s AND invoice_date = %s::date AND status != 'PAID' AND remaining_amount > 0 
-                        ORDER BY id DESC LIMIT 1 FOR UPDATE;
-                    """, (supplier_id, inv_date_target))
-                else:
-                    cur.execute("""
-                        SELECT id, total_amount, paid_amount, remaining_amount, supplier_credit 
-                        FROM supplier_invoices 
-                        WHERE supplier_id = %s AND invoice_date = CURRENT_DATE AND status != 'PAID' AND remaining_amount > 0 
-                        ORDER BY id DESC LIMIT 1 FOR UPDATE;
-                    """)
-                
-                inv = cur.fetchone()
-                if inv:
-                    inv_id = inv['id']
-                    new_tot = float(inv['total_amount'] or 0) + b_price
-                    new_paid = float(inv['paid_amount'] or 0) + paid_now
-                    new_rem = max(0.0, new_tot - new_paid)
-                    st = 'PAID' if new_rem <= 0 else 'UNPAID'
-                    cur.execute("""
-                        UPDATE supplier_invoices 
-                        SET total_amount = %s, paid_amount = %s, remaining_amount = %s, status = %s 
-                        WHERE id = %s;
-                    """, (new_tot, new_paid, new_rem, st, inv_id))
-                else:
-                    st = 'PAID' if rem_now <= 0 else 'UNPAID'
-                    if c_date:
-                        cur.execute("""
-                            INSERT INTO supplier_invoices (supplier_id, total_amount, paid_amount, remaining_amount, status, invoice_date, created_by_user_id) 
-                            VALUES (%s, %s, %s, %s, %s, %s::date, %s) RETURNING id;
-                        """, (supplier_id, b_price, paid_now, rem_now, st, inv_date_target, _clean_int_id(user_id)))
-                    else:
-                        cur.execute("""
-                            INSERT INTO supplier_invoices (supplier_id, total_amount, paid_amount, remaining_amount, status, invoice_date, created_by_user_id) 
-                            VALUES (%s, %s, %s, %s, %s, CURRENT_DATE, %s) RETURNING id;
-                        """, (supplier_id, b_price, paid_now, rem_now, st, _clean_int_id(user_id)))
-                    inv_id = cur.fetchone()['id']
+                # =========================================================================
+                # مبدأ: فاتورة المورد للدين يبقى كل جهاز لوحده بيدفع لوحده
+                # نقوم دائماً بإنشاء فاتورة مورد مستقلة خاصة بهذا الجهاز حصراً
+                # =========================================================================
+                inv_status = 'PAID' if rem_now <= 0 else 'UNPAID'
+                inv_notes = f"فاتورة شراء مستقلة للجهاز: {category} {model} (سيريال: {clean_imei})"
+                if notes and str(notes).strip():
+                    inv_notes += f" - ملاحظات: {notes.strip()}"
+
+                cur.execute("""
+                    INSERT INTO supplier_invoices (supplier_id, total_amount, paid_amount, remaining_amount, supplier_credit, status, invoice_date, created_by_user_id, notes)
+                    VALUES (%s, %s, %s, %s, 0.00, %s, %s::date, %s, %s)
+                    RETURNING id;
+                """, (supplier_id, b_price, paid_now, rem_now, inv_status, inv_date_target, _clean_int_id(user_id), inv_notes))
+                inv_id = cur.fetchone()['id']
 
                 if paid_now > 0:
+                    pay_notes = f"دفعة فورية عند شراء {category} {model} (فاتورة مستقلة #{inv_id})"
                     if c_date:
                         cur.execute("""
                             INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id, payment_date)
                             VALUES (%s, %s, %s, %s, %s, %s::timestamp);
-                        """, (inv_id, supplier_id, paid_now, f"دفعة فورية عند شراء {category} {model}", _clean_int_id(user_id), c_date))
+                        """, (inv_id, supplier_id, paid_now, pay_notes, _clean_int_id(user_id), c_date))
                     else:
                         cur.execute("""
                             INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id)
                             VALUES (%s, %s, %s, %s, %s);
-                        """, (inv_id, supplier_id, paid_now, f"دفعة فورية عند شراء {category} {model}", _clean_int_id(user_id)))
+                        """, (inv_id, supplier_id, paid_now, pay_notes, _clean_int_id(user_id)))
 
                 if c_date:
                     cur.execute("""
@@ -780,9 +839,9 @@ class DatabaseManager:
                             category, model, storage, ram, battery_health, accessories,
                             device_condition, has_box, imei_serial, buy_price,
                             supplier_id, invoice_id, notes, created_by_user_id, color, has_tax,
-                            initial_selling_price, buy_date
+                            initial_selling_price, buy_date, is_archived
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::timestamp) RETURNING id;
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::timestamp, FALSE) RETURNING id;
                     """, (category, model, storage, ram_val, bat_val, accessories, cond_val, box_val, clean_imei, b_price, supplier_id, inv_id, notes, _clean_int_id(user_id), color_val, tax_val, init_sp_val, c_date))
                 else:
                     cur.execute("""
@@ -790,9 +849,9 @@ class DatabaseManager:
                             category, model, storage, ram, battery_health, accessories,
                             device_condition, has_box, imei_serial, buy_price,
                             supplier_id, invoice_id, notes, created_by_user_id, color, has_tax,
-                            initial_selling_price
+                            initial_selling_price, is_archived
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE) RETURNING id;
                     """, (category, model, storage, ram_val, bat_val, accessories, cond_val, box_val, clean_imei, b_price, supplier_id, inv_id, notes, _clean_int_id(user_id), color_val, tax_val, init_sp_val))
                 device_id = cur.fetchone()['id']
 
@@ -804,12 +863,15 @@ class DatabaseManager:
             action_type="ADD_DEVICE",
             entity_type="DEVICE",
             entity_id=device_id,
-            description=f"إضافة وشراء جهاز للمخزون #{device_id} ({category} {model}) بسعر شراء {b_price:,.2f} ج.م وسعر بيع مبدئي {init_sp_val:,.2f} ج.م (لون: {color_val}) - فاتورة مورد #{inv_id}",
+            description=f"إضافة وشراء جهاز للمخزون #{device_id} ({category} {model}) بسعر شراء {b_price:,.2f} ج.م وسعر بيع مبدئي {init_sp_val:,.2f} ج.م (لون: {color_val}) - فاتورة مورد مستقلة #{inv_id}",
             old_values=None,
-            new_values={"category": category, "model": model, "storage": storage, "ram": ram_val, "battery": bat_val, "imei": clean_imei, "buy_price": b_price, "initial_selling_price": init_sp_val, "supplier_id": supplier_id, "invoice_id": inv_id, "paid_now": paid_now, "remaining_debt": rem_now, "color": color_val, "has_tax": tax_val}
+            new_values={"category": category, "model": model, "storage": storage, "ram": ram_val, "battery": bat_val, "imei": clean_imei, "buy_price": b_price, "initial_selling_price": init_sp_val, "supplier_id": supplier_id, "invoice_id": inv_id, "paid_now": paid_now, "remaining_debt": rem_now, "color": color_val, "has_tax": tax_val, "notes": notes}
         )
         return device_id
 
+    # =========================================================================
+    # تعديل الجهاز مع تحديث فاتورته المستقلة تلقائياً بنفس المبالغ والتواريخ
+    # =========================================================================
     def update_device(self, device_id, category, model, storage="", ram="", battery=None, imei="", buy_price=0.0, device_condition="مستعمل", has_box=False, notes="", supplier_id=None, color="أسود", has_tax=False, initial_selling_price=None, accessories="", buy_date=None, sell_date=None, user_id=None):
         dev_id = _clean_int_id(device_id)
         if dev_id is None:
@@ -884,67 +946,40 @@ class DatabaseManager:
                 target_supp_id = _clean_int_id(supplier_id) or old_supp_id
                 target_inv_id = old_inv_id
 
-                old_buy_date_str = str(old_dev.get('buy_date') or '').split()[0]
-                new_buy_date_str = parsed_buy_date.strftime("%Y-%m-%d") if parsed_buy_date else old_buy_date_str
-                buy_date_changed = (parsed_buy_date is not None and old_buy_date_str != new_buy_date_str)
-                supp_changed = (target_supp_id and target_supp_id != old_supp_id)
-
-                # تحسين منطقي: عند تغيير المورد أو تاريخ الشراء، معالجة أي فائض وتحويله لرصيد دائن فوراً
-                if supp_changed or buy_date_changed:
-                    if old_inv_id:
-                        cur.execute("SELECT total_amount, paid_amount, supplier_credit FROM supplier_invoices WHERE id = %s FOR UPDATE;", (old_inv_id,))
-                        old_inv = cur.fetchone()
-                        if old_inv:
-                            old_tot = max(0.0, float(old_inv['total_amount'] or 0) - old_price)
-                            curr_paid = float(old_inv['paid_amount'] or 0)
-                            old_credit = float(old_inv.get('supplier_credit') or 0)
-
-                            if curr_paid > old_tot:
-                                excess = curr_paid - old_tot
-                                new_credit = old_credit + excess
-                                old_rem = 0.0
-                                old_st = 'PAID'
-                                cur.execute("UPDATE supplier_invoices SET total_amount = %s, remaining_amount = %s, supplier_credit = %s, status = %s WHERE id = %s;", (old_tot, old_rem, new_credit, old_st, old_inv_id))
-                            else:
-                                old_rem = max(0.0, old_tot - curr_paid)
-                                old_st = 'PAID' if old_rem <= 0 else 'UNPAID'
-                                cur.execute("UPDATE supplier_invoices SET total_amount = %s, remaining_amount = %s, status = %s WHERE id = %s;", (old_tot, old_rem, old_st, old_inv_id))
-
-                    cur.execute("SELECT id, total_amount, paid_amount, remaining_amount FROM supplier_invoices WHERE supplier_id = %s AND invoice_date = %s::date AND status != 'PAID' ORDER BY id DESC LIMIT 1 FOR UPDATE;", (target_supp_id, new_buy_date_str))
-                    dest_inv = cur.fetchone()
-                    if dest_inv:
-                        target_inv_id = dest_inv['id']
-                        n_tot = float(dest_inv['total_amount'] or 0) + new_buy_price
-                        n_paid = float(dest_inv['paid_amount'] or 0)
-                        n_rem = max(0.0, n_tot - n_paid)
-                        n_st = 'PAID' if n_rem <= 0 else 'UNPAID'
-                        cur.execute("UPDATE supplier_invoices SET total_amount = %s, remaining_amount = %s, status = %s WHERE id = %s;", (n_tot, n_rem, n_st, target_inv_id))
-                    else:
-                        cur.execute("""
-                            INSERT INTO supplier_invoices (supplier_id, total_amount, paid_amount, remaining_amount, status, invoice_date, created_by_user_id)
-                            VALUES (%s, %s, 0.00, %s, 'UNPAID', %s::date, %s) RETURNING id;
-                        """, (target_supp_id, new_buy_price, new_buy_price, new_buy_date_str, _clean_int_id(user_id)))
-                        target_inv_id = cur.fetchone()['id']
-
-                elif target_inv_id and (new_buy_price != old_price):
-                    diff = new_buy_price - old_price
-                    cur.execute("SELECT total_amount, paid_amount, supplier_credit FROM supplier_invoices WHERE id = %s FOR UPDATE;", (target_inv_id,))
+                # =========================================================================
+                # بما أن كل جهاز له فاتورة مستقلة:
+                # إذا تغير المورد أو التاريخ أو سعر الشراء: نحدث فاتورة الجهاز المستقلة مباشرة
+                # محتفظين بنفس المبالغ المدفوعة وتعديل المتبقي أو الفائض بدقة تامة
+                # =========================================================================
+                if target_inv_id:
+                    cur.execute("SELECT * FROM supplier_invoices WHERE id = %s FOR UPDATE;", (target_inv_id,))
                     inv = cur.fetchone()
                     if inv:
-                        new_tot = max(0.0, float(inv['total_amount'] or 0) + diff)
-                        paid = float(inv['paid_amount'] or 0)
+                        curr_paid = float(inv['paid_amount'] or 0)
                         old_cred = float(inv.get('supplier_credit') or 0)
+                        new_tot = new_buy_price
 
-                        if paid > new_tot:
-                            excess = paid - new_tot
+                        if curr_paid > new_tot:
+                            excess = curr_paid - new_tot
                             new_cred = old_cred + excess
                             new_rem = 0.0
                             status = 'PAID'
-                            cur.execute("UPDATE supplier_invoices SET total_amount = %s, remaining_amount = %s, supplier_credit = %s, status = %s WHERE id = %s;", (new_tot, new_rem, new_cred, status, target_inv_id))
                         else:
-                            new_rem = max(0.0, new_tot - paid)
+                            new_rem = max(0.0, new_tot - curr_paid)
+                            new_cred = old_cred
                             status = 'PAID' if new_rem <= 0 else 'UNPAID'
-                            cur.execute("UPDATE supplier_invoices SET total_amount = %s, remaining_amount = %s, status = %s WHERE id = %s;", (new_tot, new_rem, status, target_inv_id))
+
+                        inv_date_to_set = parsed_buy_date.date() if parsed_buy_date else inv['invoice_date']
+
+                        cur.execute("""
+                            UPDATE supplier_invoices
+                            SET supplier_id = %s, total_amount = %s, remaining_amount = %s,
+                                supplier_credit = %s, status = %s, invoice_date = %s
+                            WHERE id = %s;
+                        """, (target_supp_id, new_tot, new_rem, new_cred, status, inv_date_to_set, target_inv_id))
+
+                        # تحديث المورد في سجل دفعات هذه الفاتورة ليبقى السجل متناسقاً
+                        cur.execute("UPDATE supplier_payments SET supplier_id = %s WHERE invoice_id = %s;", (target_supp_id, target_inv_id))
 
                 b_date_val = parsed_buy_date.strftime("%Y-%m-%d %H:%M:%S") if parsed_buy_date else old_dev.get('buy_date')
                 acc_val = accessories.strip() if accessories else (old_dev.get('accessories') or '')
@@ -970,9 +1005,6 @@ class DatabaseManager:
                         WHERE id = %s;
                     """, (category, model, storage, ram_val, bat_val, clean_imei, new_buy_price, cond_val, box_val, notes, target_supp_id, target_inv_id, color_val, tax_val, acc_val, b_date_val, dev_id))
 
-                if parsed_buy_date and target_inv_id:
-                    cur.execute("UPDATE supplier_invoices SET invoice_date = %s::date WHERE id = %s;", (parsed_buy_date.date(), target_inv_id))
-
                 # تحديث تاريخ البيع إذا كان الجهاز مباعاً وتغير تاريخ البيع
                 if existing_sale:
                     cur.execute("UPDATE sales SET net_profit = sell_price - %s WHERE device_id = %s;", (new_buy_price, dev_id))
@@ -987,7 +1019,8 @@ class DatabaseManager:
             "category": category, "model": model, "storage": storage, "ram": ram_val,
             "battery": bat_val, "imei": clean_imei, "buy_price": new_buy_price,
             "supplier_id": target_supp_id, "color": color_val, "has_tax": tax_val,
-            "accessories": acc_val, "device_condition": cond_val, "has_box": box_val
+            "accessories": acc_val, "device_condition": cond_val, "has_box": box_val,
+            "notes": notes
         }
         if new_init_sp is not None:
             updated_fields["initial_selling_price"] = new_init_sp
@@ -997,7 +1030,7 @@ class DatabaseManager:
             updated_fields["sell_date"] = str(parsed_sell_date)
 
         old_init_sp = float(old_dev.get('initial_selling_price') or 0.0) if old_dev and old_dev.get('initial_selling_price') is not None else None
-        
+
         # رصد وتوثيق الحالات الخاصة عند تعديل سعر البيع المبدئي أو تخفيضه
         if new_init_sp is not None and old_init_sp is not None and abs(new_init_sp - old_init_sp) > 0.01:
             diff_sp = new_init_sp - old_init_sp
@@ -1020,11 +1053,253 @@ class DatabaseManager:
             action_type="EDIT_DEVICE",
             entity_type="DEVICE",
             entity_id=dev_id,
-            description=f"تعديل بيانات ومواصفات الجهاز #{dev_id} ({category} {model})" + (f" وسعر البيع المبدئي إلى {new_init_sp:,.2f} ج.م" if new_init_sp is not None else "") + (f" وتحديث تاريخ الشراء إلى {b_date_val}" if buy_date_changed else ""),
+            description=f"تعديل بيانات ومواصفات الجهاز #{dev_id} ({category} {model}) وتحديث فاتورته المستقلة #{target_inv_id}",
             old_values=dict(old_dev) if old_dev else None,
             new_values=updated_fields
         )
 
+    # =========================================================================
+    # سداد دفعة واحدة مجمعة للمورد وتوزيعها على الأجهزة (Bulk Supplier Payment)
+    # =========================================================================
+    def pay_supplier_bulk_batch(self, supplier_id, total_amount, selected_device_ids=None, user_id=None, custom_date=None, notes=None):
+        """
+        سداد دفعة واحدة لمورد وتوزيعها:
+        - إذا تم تحديد أجهزة معينة: توزع عليها حسب الترتيب أو الأقدمية.
+        - إذا لم تحدد: توزع تلقائياً على فواتير الأجهزة غير المسددة للأقدم أولاً (FIFO).
+        - إذا تبقت زيادة بعد سداد كافة الفواتير: تسجل كرصيد دائن مستحق لنا لدى المورد.
+        """
+        s_id = _clean_int_id(supplier_id)
+        if not s_id:
+            raise Exception("المورد غير محدد بشكل صحيح!")
+
+        amount_to_distribute = float(total_amount or 0)
+        if amount_to_distribute <= 0:
+            raise Exception("يرجى إدخال مبلغ سداد صحيح أكبر من الصفر!")
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM suppliers WHERE id = %s;", (s_id,))
+                supp = cur.fetchone()
+                supp_name = supp['name'] if supp else f"مورد #{s_id}"
+
+                # جلب الفواتير غير المسددة الخاصة بهذا المورد
+                if selected_device_ids and len(selected_device_ids) > 0:
+                    clean_d_ids = [_clean_int_id(x) for x in selected_device_ids if _clean_int_id(x)]
+                    cur.execute("""
+                        SELECT i.id, i.total_amount, i.paid_amount, i.remaining_amount, i.supplier_credit, i.invoice_date,
+                               d.id as dev_id, d.category, d.model
+                        FROM supplier_invoices i
+                        JOIN devices d ON d.invoice_id = i.id
+                        WHERE i.supplier_id = %s AND i.remaining_amount > 0 AND COALESCE(d.is_archived, FALSE) = FALSE AND d.id = ANY(%s)
+                        ORDER BY i.invoice_date ASC, i.id ASC
+                        FOR UPDATE;
+                    """, (s_id, clean_d_ids))
+                else:
+                    cur.execute("""
+                        SELECT i.id, i.total_amount, i.paid_amount, i.remaining_amount, i.supplier_credit, i.invoice_date,
+                               d.id as dev_id, d.category, d.model
+                        FROM supplier_invoices i
+                        LEFT JOIN devices d ON d.invoice_id = i.id
+                        WHERE i.supplier_id = %s AND i.remaining_amount > 0 AND COALESCE(d.is_archived, FALSE) = FALSE
+                        ORDER BY i.invoice_date ASC, i.id ASC
+                        FOR UPDATE;
+                    """, (s_id,))
+
+                unpaid_invoices = cur.fetchall()
+
+                remaining_pool = amount_to_distribute
+                distribution_summary = []
+
+                c_date = custom_date.strip() if (custom_date and str(custom_date).strip()) else None
+
+                for inv in unpaid_invoices:
+                    if remaining_pool <= 0:
+                        break
+
+                    inv_id = inv['id']
+                    inv_rem = float(inv['remaining_amount'] or 0)
+                    if inv_rem <= 0:
+                        continue
+
+                    pay_for_this = min(inv_rem, remaining_pool)
+                    new_paid = float(inv['paid_amount'] or 0) + pay_for_this
+                    new_rem = max(0.0, inv_rem - pay_for_this)
+                    new_status = 'PAID' if new_rem <= 0 else 'UNPAID'
+
+                    cur.execute("""
+                        UPDATE supplier_invoices
+                        SET paid_amount = %s, remaining_amount = %s, status = %s
+                        WHERE id = %s;
+                    """, (new_paid, new_rem, new_status, inv_id))
+
+                    dev_name = f"{inv.get('category') or ''} {inv.get('model') or ''}".strip()
+                    pay_note = f"دفعة مجمعة - سداد لجهاز #{inv.get('dev_id') or '-'} ({dev_name})"
+                    if notes:
+                        pay_note += f" - {notes}"
+
+                    if c_date:
+                        cur.execute("""
+                            INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id, payment_date)
+                            VALUES (%s, %s, %s, %s, %s, %s::timestamp);
+                        """, (inv_id, s_id, pay_for_this, pay_note, _clean_int_id(user_id), c_date))
+                    else:
+                        cur.execute("""
+                            INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id)
+                            VALUES (%s, %s, %s, %s, %s);
+                        """, (inv_id, s_id, pay_for_this, pay_note, _clean_int_id(user_id)))
+
+                    distribution_summary.append({
+                        'invoice_id': inv_id,
+                        'device_id': inv.get('dev_id'),
+                        'device_name': dev_name,
+                        'paid_amount': pay_for_this,
+                        'new_remaining': new_rem
+                    })
+                    remaining_pool -= pay_for_this
+
+                # إذا تبقت مبالغ فائضة: تسجل كرصيد دائن للمورد على آخر فاتورة (أو تنشأ فاتورة رصيد)
+                excess_credit = max(0.0, remaining_pool)
+                if excess_credit > 0:
+                    # البحث عن آخر فاتورة للمورد لإضافة الرصيد الدائن لها
+                    cur.execute("SELECT id, supplier_credit FROM supplier_invoices WHERE supplier_id = %s ORDER BY id DESC LIMIT 1 FOR UPDATE;", (s_id,))
+                    last_inv = cur.fetchone()
+                    if last_inv:
+                        cur_cred = float(last_inv['supplier_credit'] or 0)
+                        cur.execute("UPDATE supplier_invoices SET supplier_credit = %s WHERE id = %s;", (cur_cred + excess_credit, last_inv['id']))
+                    else:
+                        cur.execute("""
+                            INSERT INTO supplier_invoices (supplier_id, total_amount, paid_amount, remaining_amount, supplier_credit, status, invoice_date, created_by_user_id, notes)
+                            VALUES (%s, 0.00, %s, 0.00, %s, 'PAID', CURRENT_DATE, %s, 'رصيد دائن فائض من دفعة مجمعة') RETURNING id;
+                        """, (s_id, excess_credit, excess_credit, _clean_int_id(user_id)))
+
+                conn.commit()
+
+        self.add_audit_log(
+            user_id=user_id,
+            user_name=None,
+            action_type="PAY_SUPPLIER_BULK",
+            entity_type="SUPPLIER",
+            entity_id=s_id,
+            description=f"سداد دفعة مجمعة للمورد ({supp_name}) بقيمة {amount_to_distribute:,.2f} ج.م تم توزيعها على {len(distribution_summary)} جهاز/فاتورة" + (f" مع تسجيل فائض دائن {excess_credit:,.2f} ج.م" if excess_credit > 0 else ""),
+            old_values=None,
+            new_values={"total_paid": amount_to_distribute, "devices_count": len(distribution_summary), "excess_credit": excess_credit, "distribution": distribution_summary}
+        )
+        return {
+            'total_paid': amount_to_distribute,
+            'distributed_count': len(distribution_summary),
+            'excess_credit': excess_credit,
+            'details': distribution_summary
+        }
+
+    # =========================================================================
+    # نظام أرشفة الأجهزة بالكامل (Archived System)
+    # =========================================================================
+    def can_device_be_archived(self, device_id):
+        """
+        التحقق الصارم من أهلية الجهاز للأرشفة:
+        1. الجهاز مباع بالكامل.
+        2. مسدد بالكامل من العميل (remaining_balance <= 0).
+        3. مسدد بالكامل للمورد (remaining_amount <= 0).
+        """
+        dev_id = _clean_int_id(device_id)
+        if not dev_id:
+            return False, "كود الجهاز غير صالح!"
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM devices WHERE id = %s;", (dev_id,))
+                dev = cur.fetchone()
+                if not dev:
+                    return False, "الجهاز غير موجود!"
+                if dev.get('is_deleted'):
+                    return False, "الجهاز محذوف ولا يمكن أرشفته!"
+
+                if not dev.get('is_sold'):
+                    return False, "الجهاز غير مباع حتى الآن (متاح في المخزون)! يشترط أن يكون الجهاز متباعاً ومسدداً."
+
+                # فحص مديونية العميل
+                cur.execute("SELECT remaining_balance, sell_price, customer_name FROM sales WHERE device_id = %s;", (dev_id,))
+                sale = cur.fetchone()
+                if not sale:
+                    return False, "لا توجد فاتورة بيع مسجلة لهذا الجهاز!"
+
+                cust_rem = float(sale.get('remaining_balance') or 0)
+                if cust_rem > 0:
+                    return False, f"الجهاز غير مسدد من العميل بالكامل! متبقي عليه ({cust_rem:,.2f} ج.م)."
+
+                # فحص مديونية المورد
+                inv_id = dev.get('invoice_id')
+                if inv_id:
+                    cur.execute("SELECT remaining_amount FROM supplier_invoices WHERE id = %s;", (inv_id,))
+                    inv = cur.fetchone()
+                    if inv:
+                        supp_rem = float(inv.get('remaining_amount') or 0)
+                        if supp_rem > 0:
+                            return False, f"الجهاز غير مسدد للمورد بالكامل! متبقي في فاتورة المورد ({supp_rem:,.2f} ج.م)."
+
+                return True, "الجهاز مؤهل تماماً للأرشفة (مباع ومسدد للطرفين)."
+
+    def set_device_archived(self, device_id, is_archived=True, user_id=None):
+        """
+        تحويل الجهاز إلى حالة مؤرشف أو إلغاء أرشفته.
+        عند الأرشفة يتم فحص الأهلية الصارم، ويتم استبعاد الجهاز من كافة التأثيرات المالية.
+        """
+        dev_id = _clean_int_id(device_id)
+        if not dev_id:
+            raise Exception("كود الجهاز غير صالح!")
+
+        if is_archived:
+            can_arch, reason = self.can_device_be_archived(dev_id)
+            if not can_arch:
+                raise Exception(reason)
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM devices WHERE id = %s FOR UPDATE;", (dev_id,))
+                dev = cur.fetchone()
+                if not dev:
+                    raise Exception("الجهاز غير موجود!")
+
+                if is_archived:
+                    cur.execute("""
+                        UPDATE devices 
+                        SET is_archived = TRUE, archived_at = CURRENT_TIMESTAMP, archived_by_user_id = %s
+                        WHERE id = %s;
+                    """, (_clean_int_id(user_id), dev_id))
+                    act = "ARCHIVE_DEVICE"
+                    desc = f"أرشفة الجهاز #{dev_id} ({dev.get('category')} {dev.get('model')}) وعزل تأثيره المالي بالكامل"
+                else:
+                    cur.execute("""
+                        UPDATE devices 
+                        SET is_archived = FALSE, archived_at = NULL, archived_by_user_id = NULL
+                        WHERE id = %s;
+                    """, (dev_id,))
+                    act = "UNARCHIVE_DEVICE"
+                    desc = f"إلغاء أرشفة الجهاز #{dev_id} ({dev.get('category')} {dev.get('model')}) وإعادته للعمليات النشطة"
+
+                conn.commit()
+
+        self.add_audit_log(
+            user_id=user_id,
+            user_name=None,
+            action_type=act,
+            entity_type="DEVICE",
+            entity_id=dev_id,
+            description=desc,
+            old_values={"is_archived": dev.get('is_archived')},
+            new_values={"is_archived": is_archived}
+        )
+        return True
+
+    def archive_device(self, device_id, user_id=None):
+        return self.set_device_archived(device_id, is_archived=True, user_id=user_id)
+
+    def unarchive_device(self, device_id, user_id=None):
+        return self.set_device_archived(device_id, is_archived=False, user_id=user_id)
+
+    # =========================================================================
+    # تعديل تاريخ العمليات
+    # =========================================================================
     def update_operation_date(self, entity_type, entity_id, new_date, user_id=None, notes=None):
         clean_id = _clean_int_id(entity_id)
         if not clean_id:
@@ -1058,7 +1333,7 @@ class DatabaseManager:
                     if not row:
                         raise Exception("عملية البيع غير موجودة!")
                     old_date_val = str(row['sell_date'])
-                    
+
                     if row.get('device_id'):
                         cur.execute("SELECT buy_date FROM devices WHERE id = %s;", (row['device_id'],))
                         d_row = cur.fetchone()
@@ -1188,12 +1463,15 @@ class DatabaseManager:
                         'new_total': new_tot,
                         'buy_price': buy_price,
                         'overpaid': overpaid,
-                        'is_paid': overpaid > 0
+                        'is_paid': paid > 0
                     }
         except Exception as ex:
             print(f"Error checking supplier invoice status: {ex}")
             return None
 
+    # =========================================================================
+    # حذف الجهاز مع خيار الاسترداد النقدي الفوري للخزينة أو إبقاؤه كرصيد دائن
+    # =========================================================================
     def soft_delete_device(self, device_id, user_id=None, refund_mode="FROM_DEBT_FIRST"):
         dev_id = _clean_int_id(device_id)
         if dev_id is None:
@@ -1206,8 +1484,8 @@ class DatabaseManager:
                 if not dev:
                     raise Exception("الجهاز غير موجود!")
 
-                if dev.get('is_deleted'):
-                    raise Exception("الجهاز محذوف بالفعل!")
+                if dev.get('is_archived'):
+                    raise Exception("الجهاز مؤرشف ومقفل تماماً، لا يمكن حذفه أو إجراء أي تعديل مالي عليه!")
 
                 buy_price = float(dev['buy_price'] or 0)
                 inv_id = dev.get('invoice_id')
@@ -1235,9 +1513,10 @@ class DatabaseManager:
                         excess_paid = overpaid
 
                         if refund_mode == "CASH_REFUND":
+                            # استرداد نقدي فوري للخزينة: تصفير المدفوع في الفاتورة لترتفع السيولة تلقائياً بدقة
                             new_paid = new_tot
                             new_rem = 0.0
-                            status = 'PAID'
+                            status = 'CANCELLED' if new_tot <= 0 else ('PAID' if new_rem <= 0 else 'UNPAID')
                             new_credit = old_credit
 
                             cur.execute("""
@@ -1245,19 +1524,15 @@ class DatabaseManager:
                                 SET total_amount = %s, paid_amount = %s, remaining_amount = %s, status = %s
                                 WHERE id = %s;
                             """, (new_tot, new_paid, new_rem, status, inv_id))
-
-                            # إيداع نقدي فوري بالخزينة لتوثيق السيولة بدقة
-                            if overpaid > 0:
-                                cur.execute("""
-                                    INSERT INTO capital_transactions (amount, transaction_type, notes, created_by_user_id)
-                                    VALUES (%s, 'INJECTION', %s, %s);
-                                """, (overpaid, f"استرداد نقدي فوري للخزينة لحذف جهاز مسدد #{dev_id} من فاتورة #{inv_id}", _clean_int_id(user_id)))
+                            # ملاحظة رياضية حاسمة: خفض paid_amount يرفع السيولة الحالية بمقدار المبلغ المسترد تماماً
+                            # بدون إدراج حركة حقن إضافية، مما يمنع مضاعفة الاسترداد نهائياً.
 
                         elif refund_mode == "SUPPLIER_CREDIT":
+                            # إبقاء المبلغ كدين لنا عند المورد وتصفير إجمالي ومتبقي الفاتورة
                             new_paid = paid
                             new_rem = 0.0
                             new_credit = old_credit + overpaid
-                            status = 'PAID'
+                            status = 'REFUNDED_CREDIT' if new_tot <= 0 else 'PAID'
 
                             cur.execute("""
                                 UPDATE supplier_invoices 
@@ -1266,12 +1541,11 @@ class DatabaseManager:
                             """, (new_tot, new_paid, new_rem, new_credit, status, inv_id))
 
                         else:  # FROM_DEBT_FIRST
-                            # تحسين حاسم: إذا كان هناك فائض، لا نهدره بل نرحله تلقائياً لرصيد دائن
                             if overpaid > 0:
                                 new_paid = paid
                                 new_rem = 0.0
                                 new_credit = old_credit + overpaid
-                                status = 'PAID'
+                                status = 'CANCELLED' if new_tot <= 0 else 'PAID'
                                 cur.execute("""
                                     UPDATE supplier_invoices 
                                     SET total_amount = %s, paid_amount = %s, remaining_amount = %s, supplier_credit = %s, status = %s
@@ -1280,7 +1554,7 @@ class DatabaseManager:
                             else:
                                 new_paid = paid
                                 new_rem = max(0.0, new_tot - new_paid)
-                                status = 'PAID' if new_rem <= 0 else 'UNPAID'
+                                status = 'CANCELLED' if new_tot <= 0 else ('PAID' if new_rem <= 0 else 'UNPAID')
                                 cur.execute("""
                                     UPDATE supplier_invoices 
                                     SET total_amount = %s, paid_amount = %s, remaining_amount = %s, status = %s
@@ -1319,10 +1593,6 @@ class DatabaseManager:
     def refund_supplier_credit_to_cash(self, invoice_id, amount=None, user_id=None):
         """
         استرداد الرصيد الدائن المستحق لنا لدى المورد نقداً وإيداعه فورياً في خزينة السيولة.
-        محصن تماماً ضد الازدواج المحاسبي والقيود:
-        - يخصم من supplier_credit.
-        - يخفض مدفوعات المورد التاريخية (paid_amount).
-        - ويسجل حركة خاصة SUPPLIER_REFUND توثق دخول النقدية بالدرج دون أن تحسب مرتين في السيولة.
         """
         inv_id = _clean_int_id(invoice_id)
         if inv_id is None:
@@ -1334,6 +1604,11 @@ class DatabaseManager:
                 inv = cur.fetchone()
                 if not inv:
                     raise Exception("الفاتورة غير موجودة!")
+
+                # فحص قفل الأجهزة المؤرشفة
+                cur.execute("SELECT 1 FROM devices WHERE invoice_id = %s AND COALESCE(is_archived, FALSE) = TRUE;", (inv_id,))
+                if cur.fetchone():
+                    raise Exception("هذه الفاتورة تابعة لجهاز مؤرشف ومقفل تماماً، لا يمكن إجراء أي استرداد مالي لها!")
 
                 available_credit = float(inv.get('supplier_credit') or 0.0)
                 if available_credit <= 0:
@@ -1354,12 +1629,13 @@ class DatabaseManager:
 
                 new_credit = max(0.0, available_credit - refund_amt)
                 rem = float(inv.get('remaining_amount') or 0.0)
+                tot_amt = float(inv.get('total_amount') or 0.0)
                 supp_name = inv.get('supplier_name') or f"مورد #{inv.get('supplier_id')}"
-                
+
                 curr_paid = float(inv.get('paid_amount') or 0.0)
                 new_paid = max(0.0, curr_paid - refund_amt)
 
-                new_status = 'PAID' if rem <= 0 else 'UNPAID'
+                new_status = 'CANCELLED' if (new_credit <= 0 and rem <= 0 and tot_amt <= 0) else ('PAID' if rem <= 0 else 'UNPAID')
 
                 cur.execute("""
                     UPDATE supplier_invoices 
@@ -1367,17 +1643,19 @@ class DatabaseManager:
                     WHERE id = %s;
                 """, (new_credit, new_paid, new_status, inv_id))
 
-                clean_uid = _clean_int_id(user_id)
-                if clean_uid:
-                    cur.execute("SELECT 1 FROM users WHERE id = %s;", (clean_uid,))
-                    if not cur.fetchone():
-                        clean_uid = None
+                try:
+                    clean_uid = _clean_int_id(user_id)
+                    if clean_uid:
+                        cur.execute("SELECT 1 FROM users WHERE id = %s;", (clean_uid,))
+                        if not cur.fetchone():
+                            clean_uid = None
 
-                # تسجيل حركة دخول نقدية واضحة في سجل حركات السيولة نوع SUPPLIER_REFUND
-                cur.execute("""
-                    INSERT INTO capital_transactions (amount, transaction_type, notes, created_by_user_id)
-                    VALUES (%s, 'SUPPLIER_REFUND', %s, %s);
-                """, (refund_amt, f"استرداد نقدي من رصيد دائن لدى المورد {supp_name} (فاتورة #{inv_id})", clean_uid))
+                    cur.execute("""
+                        INSERT INTO capital_transactions (amount, transaction_type, notes, created_by_user_id)
+                        VALUES (%s, 'SUPPLIER_REFUND', %s, %s);
+                    """, (refund_amt, f"استرداد نقدي من رصيد دائن لدى المورد {supp_name} (فاتورة #{inv_id})", clean_uid))
+                except Exception as tx_e:
+                    print(f"Notice: capital transaction insert for refund skipped or handled: {tx_e}")
 
                 conn.commit()
 
@@ -1393,11 +1671,24 @@ class DatabaseManager:
         )
         return refund_amt
 
-    def get_inventory(self, include_sold=False):
+    # =========================================================================
+    # استعلام المخزون مع دعم فلتر المؤرشفين وعزلهم عن الحسابات النشطة
+    # =========================================================================
+    def get_inventory(self, include_sold=False, include_archived=False, archived_only=False):
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    where_sold = "" if include_sold else "AND COALESCE(d.is_sold, FALSE) = FALSE"
+                    where_clauses = ["COALESCE(d.is_deleted, FALSE) = FALSE"]
+
+                    if archived_only:
+                        where_clauses.append("COALESCE(d.is_archived, FALSE) = TRUE")
+                    elif not include_archived:
+                        where_clauses.append("COALESCE(d.is_archived, FALSE) = FALSE")
+
+                    if not include_sold and not archived_only:
+                        where_clauses.append("COALESCE(d.is_sold, FALSE) = FALSE")
+
+                    where_sql = " AND ".join(where_clauses)
                     cur.execute(f"""
                         SELECT d.id, d.category, d.model, d.storage, d.ram, d.battery_health,
                                COALESCE(d.device_condition, 'مستعمل') as device_condition,
@@ -1410,12 +1701,14 @@ class DatabaseManager:
                                COALESCE(d.initial_selling_price, d.buy_price) as initial_selling_price,
                                COALESCE(d.is_sold, FALSE) as is_sold,
                                COALESCE(d.is_deleted, FALSE) as is_deleted,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
+                               TO_CHAR(d.archived_at, 'YYYY-MM-DD HH24:MI') as archived_at_formatted,
                                COALESCE(s.name, 'غير محدد') as supplier_name,
                                COALESCE(s.supplier_type, 'تاجر') as supplier_type,
                                TO_CHAR(d.buy_date, 'YYYY-MM-DD HH24:MI') as buy_date_formatted
                         FROM devices d
                         LEFT JOIN suppliers s ON d.supplier_id = s.id
-                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE {where_sold}
+                        WHERE {where_sql}
                         ORDER BY d.id DESC;
                     """)
                     return cur.fetchall()
@@ -1441,6 +1734,8 @@ class DatabaseManager:
                                COALESCE(d.has_tax, FALSE) as has_tax,
                                COALESCE(d.accessories, '') as accessories,
                                COALESCE(d.initial_selling_price, d.buy_price) as initial_selling_price,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
+                               TO_CHAR(d.archived_at, 'YYYY-MM-DD HH24:MI') as archived_at_formatted,
                                COALESCE(s.name, 'غير محدد') as supplier_name,
                                COALESCE(s.supplier_type, 'تاجر') as supplier_type,
                                TO_CHAR(d.buy_date, 'YYYY-MM-DD HH24:MI') as buy_date_formatted
@@ -1471,7 +1766,9 @@ class DatabaseManager:
                                TO_CHAR(d.buy_date, 'YYYY-MM-DD HH24:MI') as buy_date_formatted
                         FROM devices d
                         LEFT JOIN suppliers s ON d.supplier_id = s.id
-                        WHERE COALESCE(d.is_sold, FALSE) = FALSE AND COALESCE(d.is_deleted, FALSE) = FALSE
+                        WHERE COALESCE(d.is_sold, FALSE) = FALSE 
+                          AND COALESCE(d.is_deleted, FALSE) = FALSE
+                          AND COALESCE(d.is_archived, FALSE) = FALSE
                     """
                     params = []
                     if search_query:
@@ -1497,7 +1794,7 @@ class DatabaseManager:
             print(f"Inventory query error: {e}")
             return []
 
-    def search_device_by_criteria(self, query, search_by='SERIAL'):
+    def search_device_by_criteria(self, query, search_by='SERIAL', include_archived=False):
         try:
             q_str = str(query or "").strip()
             if not q_str:
@@ -1506,13 +1803,16 @@ class DatabaseManager:
 
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    base_select = """
+                    arch_clause = "" if include_archived else " AND COALESCE(d.is_archived, FALSE) = FALSE"
+                    base_select = f"""
                         SELECT d.*,
                                COALESCE(d.device_condition, 'مستعمل') as device_condition,
                                COALESCE(d.has_box, FALSE) as has_box,
                                COALESCE(NULLIF(d.color, 'بدون'), 'أسود') as color,
                                COALESCE(d.has_tax, FALSE) as has_tax,
                                COALESCE(d.accessories, '') as accessories,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
+                               TO_CHAR(d.archived_at, 'YYYY-MM-DD HH24:MI') as archived_at_formatted,
                                COALESCE(s.name, 'غير محدد') as supplier_name,
                                TO_CHAR(d.buy_date, 'YYYY-MM-DD HH24:MI') as buy_date_formatted,
                                sl.id as sale_id, sl.sell_price, sl.customer_name, sl.customer_phone,
@@ -1521,7 +1821,7 @@ class DatabaseManager:
                         FROM devices d
                         LEFT JOIN suppliers s ON d.supplier_id = s.id
                         LEFT JOIN sales sl ON d.id = sl.device_id
-                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE
+                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE {arch_clause}
                     """
 
                     if search_by == 'ID':
@@ -1571,8 +1871,8 @@ class DatabaseManager:
             print(f"Search error: {e}")
             return None
 
-    def search_device_by_imei_or_id(self, query):
-        return self.search_device_by_criteria(query, search_by='ALL')
+    def search_device_by_imei_or_id(self, query, include_archived=False):
+        return self.search_device_by_criteria(query, search_by='ALL', include_archived=include_archived)
 
     def process_sale(self, device_id, sell_price, customer_name, customer_phone, cash_received, notes, user_id, original_price=None, discount=0.0, custom_date=None):
         dev_id = _clean_int_id(device_id)
@@ -1672,30 +1972,37 @@ class DatabaseManager:
 
     def process_return(self, device_id, user_id=None):
         """
-        استرجاع جهاز مباع للمخزون مع إثبات أثر رد النقدية المسددة في الخزينة لتوثيق جرد الدرج بدقة.
+        استرجاع جهاز مباع للمخزون وإعادة الحسابات بدقة تامة كأنه لم يُبع،
+        دون أي خصم مزدوج أو تشويه لرصيد الخزينة.
         """
         dev_id = _clean_int_id(device_id)
+        if not dev_id:
+            raise Exception("كود الجهاز غير صالح!")
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT * FROM sales WHERE device_id = %s FOR UPDATE;", (dev_id,))
-                sale = cur.fetchone()
                 cur.execute("SELECT * FROM devices WHERE id = %s FOR UPDATE;", (dev_id,))
                 dev = cur.fetchone() or {}
+                if not dev:
+                    raise Exception("الجهاز غير موجود!")
 
-                cash_back = 0.0
-                if sale:
-                    cash_back = float(sale.get('cash_received') or 0.0)
-                    cur.execute("DELETE FROM customer_payments WHERE sale_id = %s;", (sale['id'],))
-                    cur.execute("DELETE FROM sales WHERE id = %s;", (sale['id'],))
+                if dev.get('is_archived'):
+                    raise Exception("هذا الجهاز مؤرشف ومقفل تماماً، لا يمكن استرجاعه أو إجراء أي حركة عليه!")
 
-                    # إذا كان العميل دفع نقدية (عربون أو كامل المبلغ)، يتم إثبات خروج المبلغ من الخزينة
-                    if cash_back > 0:
-                        cur.execute("""
-                            INSERT INTO capital_transactions (amount, transaction_type, notes, created_by_user_id)
-                            VALUES (%s, 'WITHDRAWAL', %s, %s);
-                        """, (cash_back, f"رد نقدية للعميل {sale.get('customer_name', 'نقدي')} عن مرتجع الجهاز #{dev_id} ({dev.get('category')} {dev.get('model')})", _clean_int_id(user_id)))
+                cur.execute("SELECT * FROM sales WHERE device_id = %s FOR UPDATE;", (dev_id,))
+                sale = cur.fetchone()
+                if not sale:
+                    raise Exception("لا توجد فاتورة بيع مسجلة لهذا الجهاز لإرجاعه!")
 
-                cur.execute("UPDATE devices SET is_sold = FALSE WHERE id = %s;", (dev_id,))
+                cash_back = float(sale.get('cash_received') or 0.0)
+
+                # حذف تحصيلات وسجل البيع
+                # ملاحظة محاسبية حاسمة: حذف سجل البيع يسقط cash_received تلقائياً من إجمالي مقبوضات المبيعات
+                # فتعود الخزينة تماماً لرصيدها الأصلي العادل قبل البيع، دون الحاجة لحركة سحب تسحب المبلغ مرة ثانية!
+                cur.execute("DELETE FROM customer_payments WHERE sale_id = %s;", (sale['id'],))
+                cur.execute("DELETE FROM sales WHERE id = %s;", (sale['id'],))
+
+                cur.execute("UPDATE devices SET is_sold = FALSE, is_archived = FALSE WHERE id = %s;", (dev_id,))
                 conn.commit()
 
         sale_info = dict(sale) if sale else {}
@@ -1710,17 +2017,19 @@ class DatabaseManager:
             new_values={"is_sold": False, "device_id": dev_id, "inventory_status": "IN_STOCK", "cash_refunded_to_customer": cash_back}
         )
 
-    def get_customer_debts(self, search_query=None):
+    def get_customer_debts(self, search_query=None, include_archived=False):
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    query = """
+                    arch_clause = "" if include_archived else "AND COALESCE(d.is_archived, FALSE) = FALSE"
+                    query = f"""
                         SELECT s.id as sale_id, s.id as id, d.id as device_id, d.category, d.model, d.imei_serial,
                                d.storage, d.ram,
                                COALESCE(d.device_condition, 'مستعمل') as device_condition,
                                COALESCE(d.has_box, FALSE) as has_box,
                                COALESCE(NULLIF(d.color, 'بدون'), 'أسود') as color,
                                COALESCE(d.has_tax, FALSE) as has_tax,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
                                s.customer_name, s.customer_phone,
                                s.sell_price, s.sell_price as total_amount,
                                s.cash_received, s.cash_received as paid_amount,
@@ -1732,7 +2041,7 @@ class DatabaseManager:
                         FROM sales s
                         JOIN devices d ON s.device_id = d.id
                         LEFT JOIN users u ON s.created_by_user_id = u.id
-                        WHERE s.remaining_balance > 0 AND COALESCE(d.is_deleted, FALSE) = FALSE
+                        WHERE s.remaining_balance > 0 AND COALESCE(d.is_deleted, FALSE) = FALSE {arch_clause}
                     """
                     params = []
                     if search_query and str(search_query).strip():
@@ -1776,14 +2085,28 @@ class DatabaseManager:
         s_id = _clean_int_id(sale_id)
         with self.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT remaining_balance, cash_received FROM sales WHERE id = %s FOR UPDATE;", (s_id,))
+                cur.execute("""
+                    SELECT s.remaining_balance, s.cash_received, COALESCE(d.is_archived, FALSE) as is_archived 
+                    FROM sales s 
+                    LEFT JOIN devices d ON s.device_id = d.id 
+                    WHERE s.id = %s FOR UPDATE;
+                """, (s_id,))
                 sale = cur.fetchone()
                 if not sale:
                     raise Exception("الفاتورة غير موجودة!")
 
-                rem = float(sale['remaining_balance'])
-                if amount > rem:
-                    raise Exception(f"المبلغ المدفوع أكبر من المتبقي ({rem:,.2f} ج.م)!")
+                if sale.get('is_archived'):
+                    raise Exception("فاتورة البيع هذه تابعة لجهاز مؤرشف ومقفل، لا يمكن تحصيل أي مبالغ لها!")
+
+                rem = float(sale['remaining_balance'] or 0.0)
+                if rem <= 0.00:
+                    raise Exception("تم سداد كامل مديونية هذا العميل مسبقاً! (المتبقي: 0.00 ج.م)")
+
+                pay_amt = float(amount or 0.0)
+                if pay_amt <= 0:
+                    raise Exception("يرجى إدخال مبلغ تحصيل صحيح أكبر من الصفر!")
+                if pay_amt > rem:
+                    raise Exception(f"المبلغ المدفوع ({pay_amt:,.2f} ج.م) أكبر من المتبقي ({rem:,.2f} ج.م)!")
 
                 new_cash = float(sale['cash_received']) + amount
                 new_rem = max(0.0, rem - amount)
@@ -1810,7 +2133,7 @@ class DatabaseManager:
     def collect_debt_installment(self, sale_id, amount, user_id, notes="", custom_date=None):
         return self.pay_customer_debt(sale_id, amount, user_id, notes=notes, custom_date=custom_date)
 
-    def get_supplier_invoices(self, search_query=None, status_filter='ALL', search_by='ALL', supplier_id=None, unpaid_only=False, date_from=None, date_to=None):
+    def get_supplier_invoices(self, search_query=None, status_filter='ALL', search_by='ALL', supplier_id=None, unpaid_only=False, date_from=None, date_to=None, include_archived=False, archived_only=False):
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
@@ -1823,9 +2146,14 @@ class DatabaseManager:
                                TO_CHAR(i.invoice_date, 'YYYY-MM-DD') as invoice_date,
                                TO_CHAR(i.invoice_date, 'YYYY-MM-DD') as date_formatted,
                                (SELECT COUNT(*) FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE) as devices_count,
+                               (SELECT d.is_archived FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as is_device_archived,
+                               (SELECT d.id FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as device_id,
+                               (SELECT d.category || ' ' || d.model FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as device_name,
+                               (SELECT d.imei_serial FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as device_imei,
                                i.total_amount, i.paid_amount, i.remaining_amount,
                                COALESCE(i.supplier_credit, 0.00) as supplier_credit,
-                               i.status
+                               i.status,
+                               COALESCE(i.notes, '') as notes
                         FROM supplier_invoices i
                         LEFT JOIN suppliers s ON i.supplier_id = s.id
                         WHERE (
@@ -1848,6 +2176,11 @@ class DatabaseManager:
                     elif status_filter == 'PAID':
                         query += " AND i.remaining_amount <= 0"
 
+                    if archived_only:
+                        query += " AND EXISTS (SELECT 1 FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_archived, FALSE) = TRUE)"
+                    elif not include_archived:
+                        query += " AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_archived, FALSE) = TRUE)"
+
                     if date_from and str(date_from).strip():
                         query += " AND i.invoice_date >= %s::date"
                         params.append(str(date_from).strip())
@@ -1869,8 +2202,12 @@ class DatabaseManager:
                             query += " AND TO_CHAR(i.invoice_date, 'YYYY-MM-DD') ILIKE %s"
                             params.append(f"%{q_str}%")
                         else:
-                            query += " AND (s.name ILIKE %s OR CAST(i.id AS TEXT) = %s OR TO_CHAR(i.invoice_date, 'YYYY-MM-DD') ILIKE %s)"
-                            params.extend([f"%{q_str}%", q_clean, f"%{q_str}%"])
+                            query += """
+                                AND (s.name ILIKE %s OR CAST(i.id AS TEXT) = %s 
+                                     OR TO_CHAR(i.invoice_date, 'YYYY-MM-DD') ILIKE %s
+                                     OR EXISTS (SELECT 1 FROM devices d WHERE d.invoice_id = i.id AND (d.model ILIKE %s OR d.imei_serial ILIKE %s OR CAST(d.id AS TEXT) = %s)))
+                            """
+                            params.extend([f"%{q_str}%", q_clean, f"%{q_str}%", f"%{q_str}%", f"%{q_str}%", q_clean])
 
                     query += " ORDER BY i.id DESC;"
                     cur.execute(query, params)
@@ -1917,6 +2254,7 @@ class DatabaseManager:
                                d.battery_health,
                                d.imei_serial, d.buy_price,
                                COALESCE(d.is_sold, FALSE) as is_sold,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
                                COALESCE(d.device_condition, 'مستعمل') as device_condition,
                                COALESCE(d.device_condition, 'مستعمل') as condition,
                                COALESCE(d.has_box, FALSE) as has_box,
@@ -1925,7 +2263,11 @@ class DatabaseManager:
                                COALESCE(d.has_tax, FALSE) as has_tax,
                                COALESCE(d.accessories, '') as accessories,
                                COALESCE(d.notes, '') as notes,
-                               CASE WHEN d.is_sold THEN 'SOLD' ELSE 'IN_STOCK' END as status
+                               CASE 
+                                   WHEN d.is_archived THEN 'ARCHIVED'
+                                   WHEN d.is_sold THEN 'SOLD' 
+                                   ELSE 'IN_STOCK' 
+                               END as status
                         FROM devices d
                         WHERE d.invoice_id = %s AND COALESCE(d.is_deleted, FALSE) = FALSE
                         ORDER BY d.id DESC;
@@ -1977,7 +2319,15 @@ class DatabaseManager:
                 if not inv:
                     raise Exception("الفاتورة غير موجودة!")
 
+                # فحص قفل الأجهزة المؤرشفة
+                cur.execute("SELECT 1 FROM devices WHERE invoice_id = %s AND COALESCE(is_archived, FALSE) = TRUE;", (inv_id,))
+                if cur.fetchone():
+                    raise Exception("هذه الفاتورة تابعة لجهاز مؤرشف ومقفل تماماً، لا يمكن تسجيل أي سداد مالي لها!")
+
                 rem = float(inv['remaining_amount'] or 0.0)
+                if rem <= 0.00:
+                    raise Exception("هذه الفاتورة مسددة بالكامل ولا توجد أي مديونية متبقية عليها للسداد! (المتبقي: 0.00 ج.م)")
+
                 pay_amt = float(amount or 0.0)
                 if pay_amt <= 0:
                     raise Exception("يرجى إدخال مبلغ سداد صحيح أكبر من الصفر!")
@@ -2112,53 +2462,101 @@ class DatabaseManager:
             old_values=dict(tx)
         )
 
+    # =========================================================================
+    # حساب المركز المالي والسيولة - استبعاد الأجهزة المؤرشفة تماماً من أي تأثير مالي
+    # =========================================================================
     def get_financial_summary(self):
         """
-        حساب المركز المالي والسيولة النقدية ورأس المال الصافي بدقة تامة دون أي تكرار محاسبي.
-        السيولة النقدية = (صافي إيداعات وسحوبات رأس المال + إجمالي المقبوضات النقدية من المبيعات) - صافي المدفوع للموردين.
-        رأس المال الشامل = (السيولة النقدية + قيمة المخزون المتاح + ديون العملاء + رصيدنا لدى الموردين) - مديونيات الموردين.
+        حساب المركز المالي والسيولة النقدية ورأس المال الصافي بدقة تامة.
+        الأجهزة المؤرشفة (is_archived = TRUE) معزولة تماماً ولا تتدخل في أي حسابات مالية
+        سواء سيولة، أو مبيعات، أو أرباح، أو رأس مال (بيانات أرشيفية وتاريخية فقط).
         """
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(buy_price), 0) as inv_cost FROM devices WHERE COALESCE(is_sold, FALSE) = FALSE AND COALESCE(is_deleted, FALSE) = FALSE;")
+                    # قيمة المخزون المتاح (الأجهزة غير المباعة وغير المحذوفة وغير المؤرشفة)
+                    cur.execute("""
+                        SELECT COUNT(*) as cnt, COALESCE(SUM(buy_price), 0) as inv_cost 
+                        FROM devices 
+                        WHERE COALESCE(is_sold, FALSE) = FALSE 
+                          AND COALESCE(is_deleted, FALSE) = FALSE 
+                          AND COALESCE(is_archived, FALSE) = FALSE;
+                    """)
                     inv_row = cur.fetchone()
                     inv_cost = float(inv_row['inv_cost'] or 0)
                     avail_cnt = int(inv_row['cnt'] or 0)
 
-                    cur.execute("SELECT COALESCE(SUM(remaining_balance), 0) as cust_debts FROM sales s JOIN devices d ON s.device_id = d.id WHERE COALESCE(d.is_deleted, FALSE) = FALSE;")
+                    # ديون العملاء النشطة (استبعاد الأجهزة المؤرشفة أو المحذوفة)
+                    cur.execute("""
+                        SELECT COALESCE(SUM(s.remaining_balance), 0) as cust_debts 
+                        FROM sales s 
+                        JOIN devices d ON s.device_id = d.id 
+                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE 
+                          AND COALESCE(d.is_archived, FALSE) = FALSE;
+                    """)
                     cust_debts = float(cur.fetchone()['cust_debts'])
 
-                    cur.execute("SELECT COALESCE(SUM(remaining_amount), 0) as supp_debts FROM supplier_invoices WHERE remaining_amount > 0;")
+                    # مديونيات الموردين النشطة (استبعاد فواتير الأجهزة المؤرشفة)
+                    cur.execute("""
+                        SELECT COALESCE(SUM(i.remaining_amount), 0) as supp_debts 
+                        FROM supplier_invoices i
+                        WHERE i.remaining_amount > 0
+                          AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_archived, FALSE) = TRUE);
+                    """)
                     supp_debts = float(cur.fetchone()['supp_debts'])
 
-                    cur.execute("SELECT COALESCE(SUM(supplier_credit), 0) as supp_credit FROM supplier_invoices WHERE supplier_credit > 0;")
+                    # الأرصدة الدائنة للموردين (استبعاد فواتير الأجهزة المؤرشفة)
+                    cur.execute("""
+                        SELECT COALESCE(SUM(i.supplier_credit), 0) as supp_credit 
+                        FROM supplier_invoices i
+                        WHERE i.supplier_credit > 0
+                          AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_archived, FALSE) = TRUE);
+                    """)
                     supp_credit = float(cur.fetchone()['supp_credit'])
 
-                    cur.execute("SELECT COALESCE(SUM(cash_received), 0) as total_sales_cash FROM sales s JOIN devices d ON s.device_id = d.id WHERE COALESCE(d.is_deleted, FALSE) = FALSE;")
+                    # إجمالي المقبوضات النقدية من المبيعات النشطة فقط (استبعاد المؤرشف تماماً)
+                    cur.execute("""
+                        SELECT COALESCE(SUM(s.cash_received), 0) as total_sales_cash 
+                        FROM sales s 
+                        JOIN devices d ON s.device_id = d.id 
+                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE 
+                          AND COALESCE(d.is_archived, FALSE) = FALSE;
+                    """)
                     total_sales_cash = float(cur.fetchone()['total_sales_cash'])
 
-                    cur.execute("SELECT COALESCE(SUM(paid_amount), 0) as supp_payments FROM supplier_invoices;")
+                    # مدفوعات الموردين النشطة (استبعاد فواتير الأجهزة المؤرشفة)
+                    cur.execute("""
+                        SELECT COALESCE(SUM(i.paid_amount), 0) as supp_payments 
+                        FROM supplier_invoices i
+                        WHERE NOT EXISTS (SELECT 1 FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_archived, FALSE) = TRUE);
+                    """)
                     supp_payments = float(cur.fetchone()['supp_payments'])
 
-                    # إيداعات رأس المال المباشرة (استبعاد استرداد الموردين لتجنب احتسابه مرتين، حيث أنه مخصوم بالفعل من supp_payments)
+                    # حركات السيولة المباشرة
                     cur.execute("SELECT COALESCE(SUM(amount), 0) as injections FROM capital_transactions WHERE COALESCE(transaction_type, 'INJECTION') IN ('INJECTION', 'DEPOSIT');")
                     injections = float(cur.fetchone()['injections'])
 
                     cur.execute("SELECT COALESCE(SUM(amount), 0) as withdrawals FROM capital_transactions WHERE transaction_type IN ('WITHDRAWAL', 'WITHDRAW');")
                     withdrawals = float(cur.fetchone()['withdrawals'])
 
+                    # أرباح الشهر الحالي (للأجهزة النشطة فقط)
                     cur.execute("""
-                        SELECT COALESCE(SUM(net_profit), 0) as m_profit 
-                        FROM sales s JOIN devices d ON s.device_id = d.id
-                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE AND TO_CHAR(s.sell_date, 'YYYY-MM') = TO_CHAR(CURRENT_DATE, 'YYYY-MM');
+                        SELECT COALESCE(SUM(s.net_profit), 0) as m_profit 
+                        FROM sales s 
+                        JOIN devices d ON s.device_id = d.id
+                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE 
+                          AND COALESCE(d.is_archived, FALSE) = FALSE 
+                          AND TO_CHAR(s.sell_date, 'YYYY-MM') = TO_CHAR(CURRENT_DATE, 'YYYY-MM');
                     """)
                     m_profit = float(cur.fetchone()['m_profit'])
 
+                    # إجمالي الأرباح النشطة
                     cur.execute("""
-                        SELECT COALESCE(SUM(net_profit), 0) as tot_profit 
-                        FROM sales s JOIN devices d ON s.device_id = d.id
-                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE;
+                        SELECT COALESCE(SUM(s.net_profit), 0) as tot_profit 
+                        FROM sales s 
+                        JOIN devices d ON s.device_id = d.id
+                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE 
+                          AND COALESCE(d.is_archived, FALSE) = FALSE;
                     """)
                     tot_profit = float(cur.fetchone()['tot_profit'])
 
@@ -2198,13 +2596,14 @@ class DatabaseManager:
                 'total_profit': 0, 'total_injections': 0
             }
 
-    def get_sales_report(self, date_from=None, date_to=None, search_query=None, start_date=None, end_date=None):
+    def get_sales_report(self, date_from=None, date_to=None, search_query=None, start_date=None, end_date=None, include_archived=False):
         df = date_from if date_from is not None else start_date
         dt = date_to if date_to is not None else end_date
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    query = """
+                    arch_clause = "" if include_archived else "AND COALESCE(d.is_archived, FALSE) = FALSE"
+                    query = f"""
                         SELECT s.id as sale_id, s.id as id, d.id as device_id, d.category, d.model,
                                d.storage, d.ram, d.battery_health, d.imei_serial, d.buy_price,
                                COALESCE(d.device_condition, 'مستعمل') as device_condition,
@@ -2214,6 +2613,7 @@ class DatabaseManager:
                                COALESCE(NULLIF(d.color, 'بدون'), 'أسود') as color,
                                COALESCE(d.has_tax, FALSE) as has_tax,
                                COALESCE(d.accessories, '') as accessories,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
                                s.sell_price, s.sell_price as final_sell_price,
                                s.cash_received, s.remaining_balance,
                                s.net_profit, s.net_profit as profit,
@@ -2224,7 +2624,7 @@ class DatabaseManager:
                         FROM sales s
                         JOIN devices d ON s.device_id = d.id
                         LEFT JOIN users u ON s.created_by_user_id = u.id
-                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE
+                        WHERE COALESCE(d.is_deleted, FALSE) = FALSE {arch_clause}
                     """
                     params = []
                     if df and str(df).strip():
@@ -2254,6 +2654,135 @@ class DatabaseManager:
             print(f"Sales report error: {e}")
             return []
 
+    def get_profit_report(self, date_from=None, date_to=None, search_query=None):
+        """
+        تقرير وبحث الأرباح التفصيلي مع العزل التام للأجهزة المؤرشفة والمرتجعة.
+        """
+        sales = self.get_sales_report(date_from=date_from, date_to=date_to, search_query=search_query, include_archived=False)
+        total_sales_val = sum(float(s.get('sell_price') or 0) for s in sales)
+        total_cost_val = sum(float(s.get('buy_price') or 0) for s in sales)
+        total_profit_val = sum(float(s.get('net_profit') or 0) for s in sales)
+        total_discount_val = sum(float(s.get('discount') or 0) for s in sales)
+        margin_pct = (total_profit_val / total_cost_val * 100) if total_cost_val > 0 else 0.0
+
+        return {
+            'sales': sales,
+            'summary': {
+                'sales_count': len(sales),
+                'total_sales_value': total_sales_val,
+                'total_cost_value': total_cost_val,
+                'total_net_profit': total_profit_val,
+                'total_discount': total_discount_val,
+                'profit_margin_pct': margin_pct
+            }
+        }
+
+    def get_supplier_comprehensive_period_report(self, supplier_id, date_from=None, date_to=None):
+        """
+        تقرير مديونية ومشتريات وسدادات شامل لمورد محدد في فترة زمنية معينة:
+        - إجمالي عدد الأجهزة المشتراة
+        - إجمالي قيمة الفواتير / المشتريات
+        - إجمالي المسدد للمورد في هذه الفترة
+        - صافي المديونية المتبقية عليه
+        - إجمالي الرصيد الدائن المستحق لنا
+        - جدول تفصيلي بالأجهزة والسيريال وتفاصيل فواتيرها
+        - سجل الدفعات المسددة للمورد في الفترة
+        """
+        s_id = _clean_int_id(supplier_id)
+        if not s_id:
+            raise Exception("يرجى اختيار المورد أولاً!")
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM suppliers WHERE id = %s;", (s_id,))
+                supp = cur.fetchone()
+                if not supp:
+                    raise Exception("المورد غير موجود!")
+
+                # شروط التاريخ لفواتير المورد
+                date_filter_sql = ""
+                params = [s_id]
+                if date_from and str(date_from).strip():
+                    date_filter_sql += " AND i.invoice_date >= %s::date"
+                    params.append(str(date_from).strip())
+                if date_to and str(date_to).strip():
+                    date_filter_sql += " AND i.invoice_date <= %s::date"
+                    params.append(str(date_to).strip())
+
+                cur.execute(f"""
+                    SELECT i.id as invoice_id, i.total_amount, i.paid_amount, i.remaining_amount,
+                           COALESCE(i.supplier_credit, 0.00) as supplier_credit,
+                           TO_CHAR(i.invoice_date, 'YYYY-MM-DD') as invoice_date_formatted,
+                           i.status, COALESCE(i.notes, '') as invoice_notes,
+                           d.id as device_id, d.category, d.model, d.storage, d.ram, d.imei_serial,
+                           d.buy_price, COALESCE(d.device_condition, 'مستعمل') as device_condition,
+                           COALESCE(d.color, 'أسود') as color, COALESCE(d.has_box, FALSE) as has_box,
+                           COALESCE(d.has_tax, FALSE) as has_tax, COALESCE(d.battery_health, 100) as battery_health,
+                           COALESCE(d.accessories, '') as accessories,
+                           COALESCE(d.notes, '') as device_notes,
+                           COALESCE(d.is_sold, FALSE) as is_sold,
+                           COALESCE(d.is_archived, FALSE) as is_archived
+                    FROM supplier_invoices i
+                    LEFT JOIN devices d ON d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE
+                    WHERE i.supplier_id = %s {date_filter_sql}
+                    ORDER BY i.invoice_date DESC, i.id DESC;
+                """, params)
+                invoices_devices = cur.fetchall()
+
+                tot_purchases = sum(float(x.get('total_amount') or 0) for x in invoices_devices if not x.get('is_archived'))
+                tot_paid = sum(float(x.get('paid_amount') or 0) for x in invoices_devices if not x.get('is_archived'))
+                tot_remaining = sum(float(x.get('remaining_amount') or 0) for x in invoices_devices if not x.get('is_archived'))
+                tot_credit = sum(float(x.get('supplier_credit') or 0) for x in invoices_devices if not x.get('is_archived'))
+
+                pay_params = [s_id]
+                pay_date_sql = ""
+                if date_from and str(date_from).strip():
+                    pay_date_sql += " AND DATE(sp.payment_date) >= %s::date"
+                    pay_params.append(str(date_from).strip())
+                if date_to and str(date_to).strip():
+                    pay_date_sql += " AND DATE(sp.payment_date) <= %s::date"
+                    pay_params.append(str(date_to).strip())
+
+                cur.execute(f"""
+                    SELECT sp.id, sp.invoice_id, sp.payment_amount,
+                           COALESCE(sp.notes, '') as notes,
+                           TO_CHAR(sp.payment_date, 'YYYY-MM-DD HH24:MI') as payment_date_formatted,
+                           COALESCE(u.full_name, u.username, 'مستخدم') as paid_by_name
+                    FROM supplier_payments sp
+                    LEFT JOIN users u ON sp.created_by_user_id = u.id
+                    WHERE sp.supplier_id = %s {pay_date_sql}
+                    ORDER BY sp.payment_date DESC, sp.id DESC;
+                """, pay_params)
+                payments_history = cur.fetchall()
+                total_payments_in_period = sum(float(p.get('payment_amount') or 0) for p in payments_history)
+
+                cur.execute("""
+                    SELECT COALESCE(SUM(remaining_amount), 0) as all_rem,
+                           COALESCE(SUM(supplier_credit), 0) as all_cred
+                    FROM supplier_invoices
+                    WHERE supplier_id = %s;
+                """, (s_id,))
+                all_stat = cur.fetchone()
+
+                return {
+                    'supplier': dict(supp),
+                    'period': {'date_from': date_from, 'date_to': date_to},
+                    'summary': {
+                        'devices_count': len([x for x in invoices_devices if x.get('device_id')]),
+                        'invoices_count': len(invoices_devices),
+                        'total_purchases_amount': tot_purchases,
+                        'total_paid_invoices': tot_paid,
+                        'total_remaining_debt': tot_remaining,
+                        'total_supplier_credit': tot_credit,
+                        'payments_in_period_sum': total_payments_in_period,
+                        'net_period_change': tot_purchases - total_payments_in_period,
+                        'all_time_remaining_debt': float(all_stat['all_rem'] or 0),
+                        'all_time_supplier_credit': float(all_stat['all_cred'] or 0)
+                    },
+                    'devices_invoices': invoices_devices,
+                    'payments': payments_history
+                }
+
     def get_device_full_details(self, device_id):
         try:
             dev_id = _clean_int_id(device_id)
@@ -2270,6 +2799,8 @@ class DatabaseManager:
                                COALESCE(d.has_tax, FALSE) as has_tax,
                                COALESCE(d.accessories, '') as accessories,
                                COALESCE(d.notes, '') as notes,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
+                               TO_CHAR(d.archived_at, 'YYYY-MM-DD HH24:MI') as archived_at_formatted,
                                COALESCE(s.name, 'غير محدد') as supplier_name,
                                COALESCE(s.supplier_type, 'تاجر') as supplier_type,
                                TO_CHAR(d.buy_date, 'YYYY-MM-DD HH24:MI') as buy_date_formatted,
@@ -2331,6 +2862,7 @@ class DatabaseManager:
                                COALESCE(NULLIF(d.color, 'بدون'), 'أسود') as color,
                                COALESCE(d.has_tax, FALSE) as has_tax,
                                COALESCE(d.accessories, '') as accessories,
+                               COALESCE(d.is_archived, FALSE) as is_archived,
                                TO_CHAR(s.sell_date, 'YYYY-MM-DD HH24:MI') as sell_date_formatted,
                                COALESCE(u.full_name, u.username, 'بائع النظام') as seller_name
                         FROM sales s
@@ -2408,7 +2940,7 @@ class DatabaseManager:
                     'data': target
                 }
 
-        dev_by_serial = self.search_device_by_criteria(q, search_by='SERIAL')
+        dev_by_serial = self.search_device_by_criteria(q, search_by='SERIAL', include_archived=True)
         if dev_by_serial:
             full_dev = self.get_device_full_details(dev_by_serial['id'])
             return {
