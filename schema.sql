@@ -1,5 +1,6 @@
 -- =================================================================================
 -- المخطط الكامل والمحدث لقاعدة البيانات (PostgreSQL) - مركز هشام كيوان لإدارة الهواتف
+-- الإصدار الثاني المحدث: دعم الفهارس المتقدمة، الأرشفة، والفواتير المستقلة
 -- =================================================================================
 
 CREATE TABLE IF NOT EXISTS users (
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS sales (
     sell_price NUMERIC(12, 2) NOT NULL,
     customer_name VARCHAR(100) NOT NULL DEFAULT 'عميل نقدي',
     customer_phone VARCHAR(30),
+    customer_address VARCHAR(255) DEFAULT '',
     cash_received NUMERIC(12, 2) DEFAULT 0.00,
     remaining_balance NUMERIC(12, 2) DEFAULT 0.00,
     net_profit NUMERIC(12, 2) DEFAULT 0.00,
@@ -101,7 +103,7 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
 CREATE TABLE IF NOT EXISTS capital_transactions (
     id SERIAL PRIMARY KEY,
     amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
-    transaction_type VARCHAR(20) NOT NULL DEFAULT 'INJECTION',
+    transaction_type VARCHAR(50) NOT NULL DEFAULT 'INJECTION',
     notes TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by_user_id INT REFERENCES users(id)

@@ -1,3 +1,8 @@
+# =================================================================================
+# محرك طباعة ومعاينة الفواتير عالي الدقة - مركز هشام كيوان لإدارة الهواتف
+# يدعم مقاسات A4/A5 القياسية، أنماط ألوان فاخرة، باركود و QR
+# =================================================================================
+
 import os
 import tempfile
 from datetime import datetime
@@ -212,19 +217,21 @@ def generate_invoice_image(invoice_data):
             pass
 
     doc_type = invoice_data.get("doc_type", "SALE")
-    is_supp_doc = doc_type in ("SUPPLIER_INVOICE", "SUPPLIER_DEBT")
+    is_supp_doc = doc_type in ("SUPPLIER_INVOICE", "SUPPLIER_DEBT", "SUPPLIER_STATEMENT")
     is_archived = bool(invoice_data.get("is_archived"))
 
     if is_archived:
         sub_label = "فاتورة مؤرشفة وسجل تاريخي معتمد (خالص بالكامل 🗄️)"
     elif doc_type == "CUSTOMER_DEBT":
         sub_label = "بيان مديونية وحساب عميل معتمد"
+    elif doc_type == "SUPPLIER_STATEMENT":
+        sub_label = "كشف حساب مشتريات وسداد مورد بالفترة"
     elif is_supp_doc:
         sub_label = "فاتورة مشتريات وتوريد بضاعة معتمدة"
     else:
         sub_label = "فاتورة بيع وضمان رسمي معتمد للأجهزة الذكية"
 
-    draw.text((width // 2, header_top + 38), fix_arabic_text("محل هشام كيوان لإدارة الهواتف"), fill=palette["primary"], font=fonts["banner"], anchor="mm")
+    draw.text((width // 2, header_top + 38), fix_arabic_text("مركز هشام كيوان لإدارة الهواتف"), fill=palette["primary"], font=fonts["banner"], anchor="mm")
     draw.text((width // 2, header_top + 84), fix_arabic_text(sub_label), fill=palette["secondary"], font=fonts["subtitle"], anchor="mm")
     draw.text((width // 2, header_top + 116), fix_arabic_text("خدمة عملاء معتمدة  •  أجهزة أصلية ومفحوصة  •  ضمان صريح ومسجل بالنظام"), fill=palette["text_muted"], font=fonts["small"], anchor="mm")
 
