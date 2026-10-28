@@ -52,6 +52,9 @@ PERMISSIONS_DICT = {
     'can_print_supplier_invoice': 'طباعة فواتير وكشوف الموردين',
     'can_view_supplier_period_report': 'عرض وسداد كشف حساب المورد بالفترة المحددة',
 
+    'can_view_general_transactions': 'عرض شاشة المعاملات المالية والعهد والأصول',
+    'can_add_general_transaction': 'تسجيل معاملة مالية / عهدة / مصروف',
+    'can_refund_general_transaction': 'استرداد مبالغ العهد والسلف والأمانات',
     'can_view_capital_details': 'عرض تفاصيل ومعادلة رأس المال الشامل',
     'can_view_liquidity': 'رؤية السيولة ورأس المال',
     'can_add_liquidity': 'إضافة سيولة مالية جديدة',
@@ -105,6 +108,11 @@ PERMISSION_GROUPS = [
         ('can_manage_suppliers', 'إدارة وتعديل بيانات الموردين'),
         ('can_delete_suppliers', 'حذف وأرشفة الموردين'),
         ('can_print_supplier_invoice', 'طباعة فواتير الموردين'),
+    ]),
+    ("💼 المعاملات المالية والعهد والأصول", [
+        ('can_view_general_transactions', 'عرض شاشة المعاملات والعهد والأصول'),
+        ('can_add_general_transaction', 'تسجيل معاملة مالية / عهدة / مصروف'),
+        ('can_refund_general_transaction', 'استرداد مبالغ العهد والسلف والأمانات'),
     ]),
     ("📊 التقارير والسيولة والأرباح", [
         ('can_view_reports', 'الدخول لشاشة التقارير المالية'),
@@ -251,6 +259,17 @@ class MasterMobileApp(tk.Tk):
             return True
         return False
 
+    def debounce(self, key, callback, delay_ms=250):
+        if not hasattr(self, '_debounce_timers'):
+            self._debounce_timers = {}
+        timer_id = self._debounce_timers.get(key)
+        if timer_id is not None:
+            try:
+                self.after_cancel(timer_id)
+            except Exception:
+                pass
+        self._debounce_timers[key] = self.after(delay_ms, callback)
+
     def load_logo_icon(self):
         if os.path.exists("logo.png"):
             try:
@@ -373,6 +392,10 @@ class MasterMobileApp(tk.Tk):
             if perm_key in perms:
                 return bool(perms.get(perm_key))
 
+        if perm_key in ('can_view_general_transactions', 'can_add_general_transaction', 'can_refund_general_transaction'):
+            if perm_key in perms:
+                return bool(perms.get(perm_key))
+
         if perm_key in perms:
             return bool(perms[perm_key])
 
@@ -403,6 +426,9 @@ class MasterMobileApp(tk.Tk):
             'can_view_sales_report': 'can_view_reports',
             'can_delete_sales': 'can_edit_transactions',
             'can_refund_supplier_credit': 'can_manage_suppliers',
+            'can_view_general_transactions': 'can_view_reports',
+            'can_add_general_transaction': 'can_add_liquidity',
+            'can_refund_general_transaction': 'can_view_reports',
             'can_view_capital_details': 'can_view_reports',
             'can_delete_liquidity_tx': 'can_manage_users',
             'can_edit_operation_dates': 'can_manage_users',
@@ -466,6 +492,7 @@ class MasterMobileApp(tk.Tk):
                     "buy": ("#0369a1", "#0284c7"),
                     "cust_debts": ("#1d4ed8", "#3b82f6"),
                     "supp_debts": ("#0e7490", "#06b6d4"),
+                    "general_trans": ("#0369a1", "#0284c7"),
                     "reports": ("#1e3a8a", "#2563eb"),
                     "audit": ("#0f766e", "#14b8a6"),
                     "users": ("#334155", "#475569"),
@@ -511,6 +538,7 @@ class MasterMobileApp(tk.Tk):
                     "buy": ("#0284c7", "#0369a1"),
                     "cust_debts": ("#3b82f6", "#2563eb"),
                     "supp_debts": ("#0891b2", "#0e7490"),
+                    "general_trans": ("#0284c7", "#0369a1"),
                     "reports": ("#1d4ed8", "#1e40af"),
                     "audit": ("#0f766e", "#14b8a6"),
                     "users": ("#475569", "#334155"),
@@ -1070,6 +1098,11 @@ class MasterMobileApp(tk.Tk):
                 messagebox.showinfo("تم الحفظ", f"تم حفظ الفاتورة بنجاح في:\n{dest}", parent=p_win)
 
         def on_close_preview():
+            state_holder["tk_img"] = None
+            try:
+                lbl_preview_img.config(image="")
+            except Exception:
+                pass
             cleanup_temp_files()
             p_win.destroy()
 
@@ -1506,6 +1539,8 @@ class MasterMobileApp(tk.Tk):
             self.view_customer_debts()
         elif self.has_permission('can_view_supplier_debts'):
             self.view_supplier_debts()
+        elif self.has_permission('can_view_general_transactions'):
+            self.view_general_financial_transactions()
         elif self.has_permission('can_view_reports'):
             self.view_reports()
         elif self.has_permission('can_manage_users'):
@@ -1590,6 +1625,7 @@ class MasterMobileApp(tk.Tk):
             ("buy", "📥 المشتريات", self.view_buy, self.has_permission('can_buy_devices')),
             ("cust_debts", "💳 ديون العملاء", self.view_customer_debts, self.has_permission('can_view_customer_debts')),
             ("supp_debts", "🏭 حسابات الموردين", self.view_supplier_debts, self.has_permission('can_view_supplier_debts')),
+            ("general_trans", "💼 المعاملات والعهد", self.view_general_financial_transactions, self.has_permission('can_view_general_transactions')),
             ("reports", "📊 التقارير المالية", self.view_reports, self.has_permission('can_view_reports')),
             ("audit", "📜 سجل العمليات", self.view_audit_logs, self.has_permission('can_view_audit_logs')),
             ("users", "👥 المستخدمين", self.view_user_management, self.has_permission('can_manage_users')),
@@ -2286,7 +2322,7 @@ class MasterMobileApp(tk.Tk):
 
             lbl_guide_count.config(text=f"الصلاحيات المعروضة: {matched_count} من {len(PERMISSIONS_DICT)}")
 
-        guide_search_ent.bind("<KeyRelease>", lambda e: build_cards(guide_search_ent.get()))
+        guide_search_ent.bind("<KeyRelease>", lambda e: self.debounce("guide_search", lambda: build_cards(guide_search_ent.get()), 250))
         build_cards()
 
         bot_f = tk.Frame(gwin, bg=self.COLOR_TOPBAR, pady=8, padx=16)
@@ -2751,7 +2787,7 @@ class MasterMobileApp(tk.Tk):
 
         if self.has_permission('can_delete_inventory'):
             tk.Button(
-                actions_bar, text="🗑️ حذف الجهاز", command=lambda: delete_selected_device(),
+                actions_bar, text="🔄 مرتجع للمورد", command=lambda: delete_selected_device(),
                 bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 10, "bold"),
                 padx=14, pady=5, relief="flat", cursor="hand2"
             ).pack(side="right", padx=4)
@@ -2910,7 +2946,7 @@ class MasterMobileApp(tk.Tk):
             if not d:
                 return
             if d.get('is_sold') and not d.get('is_archived'):
-                messagebox.showwarning("تنبيه مالي", "لا يمكن حذف جهاز مباع مباشرة! يرجى عمل (استرجاع للمخزون) أولاً لضبط الحسابات والسيولة.")
+                messagebox.showwarning("تنبيه مالي", "لا يمكن عمل مرتجع للمورد لجهاز مباع مباشرة! يرجى عمل (استرجاع للمخزون) أولاً لضبط الحسابات والسيولة.")
                 return
 
             inv_stat = self.db.get_device_supplier_invoice_status(d['id'])
@@ -2921,7 +2957,7 @@ class MasterMobileApp(tk.Tk):
                 supp_name = inv_stat.get('supplier_name') or d.get('supplier_name') or 'المورد'
 
                 choice_win = tk.Toplevel(self)
-                choice_win.title("تسوية مستحقات حذف الجهاز")
+                choice_win.title("تسوية مستحقات مرتجع الجهاز للمورد")
                 choice_win.geometry("540x360")
                 choice_win.configure(bg=self.COLOR_CARD)
                 choice_win.resizable(False, False)
@@ -2930,7 +2966,7 @@ class MasterMobileApp(tk.Tk):
                 top_c = tk.Frame(choice_win, bg=self.COLOR_TOPBAR, pady=10, padx=14)
                 top_c.pack(fill="x")
                 tk.Label(
-                    top_c, text=fix_bidi(f"⚠️ تسوية حذف الجهاز #{d['id']} - مسدد ثمنه"),
+                    top_c, text=fix_bidi(f"⚠️ تسوية مرتجع الجهاز للمورد #{d['id']} - مسدد ثمنه"),
                     font=("Segoe UI", 12, "bold"), bg=self.COLOR_TOPBAR, fg=self.COLOR_WARN
                 ).pack(side="right")
 
@@ -2948,7 +2984,7 @@ class MasterMobileApp(tk.Tk):
                     try:
                         self.db.delete_device(d['id'], self.current_user_id, refund_mode='CASH_REFUND')
                         choice_win.destroy()
-                        messagebox.showinfo("تم الحذف والاسترداد", f"تم حذف الجهاز وإيداع مبلغ {fmt_curr(excess_amt)} كاسترداد نقدي في السيولة بالخزينة!")
+                        messagebox.showinfo("تم المرتجع والاسترداد", f"تم إرجاع الجهاز للمورد وإيداع مبلغ {fmt_curr(excess_amt)} كاسترداد نقدي في السيولة بالخزينة!")
                         refresh_inventory_table()
                     except Exception as ex:
                         messagebox.showerror("خطأ", str(ex), parent=choice_win)
@@ -2957,7 +2993,7 @@ class MasterMobileApp(tk.Tk):
                     try:
                         self.db.delete_device(d['id'], self.current_user_id, refund_mode='SUPPLIER_CREDIT')
                         choice_win.destroy()
-                        messagebox.showinfo("تم الحذف وتسجيل الرصيد", f"تم حذف الجهاز وتسجيل مبلغ {fmt_curr(excess_amt)} كرصيد دائن مستحق لنا لدى المورد في الفاتورة!")
+                        messagebox.showinfo("تم المرتجع وتسجيل الرصيد", f"تم إرجاع الجهاز للمورد وتسجيل مبلغ {fmt_curr(excess_amt)} كرصيد دائن مستحق لنا لدى المورد في الفاتورة!")
                         refresh_inventory_table()
                     except Exception as ex:
                         messagebox.showerror("خطأ", str(ex), parent=choice_win)
@@ -2989,15 +3025,15 @@ class MasterMobileApp(tk.Tk):
                     f"هل أنت متأكد من حذف الجهاز #{d['id']} ({d['category']} {d['model']})؟\n\n"
                     f"ملاحظة مالية: سيتم خصم تكلفة الجهاز ({fmt_curr(buy_p)}) بالكامل من المبلغ المتبقي المطلوب للمورد (المديونية)."
                 )
-                if messagebox.askyesno("تأكيد حذف الجهاز", msg):
+                if messagebox.askyesno("تأكيد مرتجع الجهاز للمورد", msg):
                     try:
                         self.db.delete_device(d['id'], self.current_user_id, refund_mode='FROM_DEBT_FIRST')
-                        messagebox.showinfo("تم الحذف", "تم حذف الجهاز وخصم تكلفته من مديونية المورد بنجاح!")
+                        messagebox.showinfo("تم المرتجع للمورد", "تم عمل مرتجع للجهاز للمورد وخصم تكلفته من مديونية المورد بنجاح!")
                         refresh_inventory_table()
                     except Exception as ex:
                         messagebox.showerror("خطأ", str(ex))
 
-        search_entry.bind("<KeyRelease>", refresh_inventory_table)
+        search_entry.bind("<KeyRelease>", lambda e: self.debounce("inv_search", refresh_inventory_table, 250))
         inv_search_type_cb.bind("<<ComboboxSelected>>", refresh_inventory_table)
         brand_cb.bind("<<ComboboxSelected>>", refresh_inventory_table)
         status_cb.bind("<<ComboboxSelected>>", refresh_inventory_table)
@@ -3801,7 +3837,7 @@ class MasterMobileApp(tk.Tk):
                 except Exception as ex:
                     messagebox.showerror("خطأ", str(ex), parent=rwin)
 
-        s_ent.bind("<KeyRelease>", load_sold_devices)
+        s_ent.bind("<KeyRelease>", lambda e: self.debounce("return_search", load_sold_devices, 250))
         load_sold_devices()
 
         bot_bar = tk.Frame(rwin, bg=self.COLOR_TOPBAR, pady=10, padx=16)
@@ -4222,7 +4258,11 @@ class MasterMobileApp(tk.Tk):
                     custom_date=buy_custom_dt
                 )
                 dev_id = res['device_id'] if isinstance(res, dict) else res
-                messagebox.showinfo("تم الإدخال بنجاح", f"تم إضافة الجهاز #{dev_id} ({cat_val} {mod_val}) إلى المخزون وإنشاء فاتورته المستقلة بنجاح!")
+                offset_val = res.get('offset_amount', 0) if isinstance(res, dict) else 0
+                success_msg = f"تم إضافة الجهاز #{dev_id} ({cat_val} {mod_val}) إلى المخزون وإنشاء فاتورته المستقلة بنجاح!"
+                if offset_val > 0:
+                    success_msg += f"\n\n★ تم الخصم تلقائياً من رصيد ديننا القديم لدى المورد بمبلغ ({fmt_curr(offset_val)}) وسداد المتبقي فقط!"
+                messagebox.showinfo("تم الإدخال بنجاح", success_msg)
 
                 ent_model.delete(0, tk.END)
                 cb_ram.set("")
@@ -4760,7 +4800,7 @@ class MasterMobileApp(tk.Tk):
             }
             self.open_invoice_preview_and_print(inv_data, f"كشف حساب عميل - فاتورة #{d['sale_id']}")
 
-        search_ent.bind("<KeyRelease>", refresh_debts)
+        search_ent.bind("<KeyRelease>", lambda e: self.debounce("debts_search", refresh_debts, 250))
         debt_search_type_cb.bind("<<ComboboxSelected>>", refresh_debts)
         refresh_debts()
 
@@ -5407,7 +5447,7 @@ class MasterMobileApp(tk.Tk):
             self._print_supplier_invoice_obj(inv)
 
         itree.bind("<Double-1>", open_selected_invoice_details)
-        supp_search_ent.bind("<KeyRelease>", refresh_supplier_page)
+        supp_search_ent.bind("<KeyRelease>", lambda e: self.debounce("supp_search", refresh_supplier_page, 250))
         supp_search_type_cb.bind("<<ComboboxSelected>>", refresh_supplier_page)
         supp_filter_cb.bind("<<ComboboxSelected>>", refresh_supplier_page)
         st_filter_cb.bind("<<ComboboxSelected>>", refresh_supplier_page)
@@ -5695,12 +5735,19 @@ class MasterMobileApp(tk.Tk):
 
         render_modal_contents()
 
+    def view_general_financial_transactions(self):
+        """فتح شاشة المعاملات المالية العامة والعهد مباشرة من القائمة الجانبية أو الاختصارات"""
+        if not (self.has_permission('can_view_general_transactions') or self.has_permission('can_view_reports')):
+            messagebox.showerror("صلاحيات غير كافية", "عفواً، لا تملك صلاحية عرض المعاملات المالية والعهد!")
+            return
+        self.view_reports(active_tab="general_transactions")
+
     def view_reports(self, active_tab="financial_center"):
-        if not self.has_permission('can_view_reports'):
+        if not self.has_permission('can_view_reports') and not self.has_permission('can_view_general_transactions'):
             messagebox.showerror("صلاحيات غير كافية", "عفواً، لا تملك صلاحية الدخول لشاشة التقارير المالية!")
             return
 
-        self.current_view_func = self.view_reports
+        self.current_view_func = lambda: self.view_reports(active_tab=tab_state.get("current", active_tab))
         self.build_main_ui(keep_view=True)
         self.clear_content()
 
@@ -5708,7 +5755,7 @@ class MasterMobileApp(tk.Tk):
         top_switcher.pack(fill="x", padx=18, pady=(10, 8))
 
         tk.Label(
-            top_switcher, text="📊 التقارير المالية:",
+            top_switcher, text="📊 الإدارة والتقارير المالية:",
             font=("Segoe UI", 14, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_BLUE
         ).pack(side="right", padx=(0, 14))
 
@@ -5718,40 +5765,65 @@ class MasterMobileApp(tk.Tk):
         tab_state = {"current": active_tab}
 
         btn_tab_fin = tk.Button(
-            top_switcher, text="🏦 المركز المالي والسيولة",
+            top_switcher, text="🏦 المركز المالي ورأس المال",
             command=lambda: switch_report_tab("financial_center"),
-            font=("Segoe UI", 11, "bold"), padx=18, pady=6, relief="flat", cursor="hand2"
+            font=("Segoe UI", 10, "bold"), padx=14, pady=5, relief="flat", cursor="hand2"
         )
-        btn_tab_fin.pack(side="right", padx=5)
+        btn_tab_fin.pack(side="right", padx=4)
+
+        btn_tab_gen = tk.Button(
+            top_switcher, text="💼 المعاملات والعهد والأصول",
+            command=lambda: switch_report_tab("general_transactions"),
+            font=("Segoe UI", 10, "bold"), padx=14, pady=5, relief="flat", cursor="hand2"
+        )
+        btn_tab_gen.pack(side="right", padx=4)
+
+        btn_tab_liq = tk.Button(
+            top_switcher, text="💰 حركة السيولة والخزينة",
+            command=lambda: switch_report_tab("liquidity"),
+            font=("Segoe UI", 10, "bold"), padx=14, pady=5, relief="flat", cursor="hand2"
+        )
+        btn_tab_liq.pack(side="right", padx=4)
 
         btn_tab_prof = tk.Button(
             top_switcher, text="📈 الأرباح وسجل المبيعات",
             command=lambda: switch_report_tab("profits_sales"),
-            font=("Segoe UI", 11, "bold"), padx=18, pady=6, relief="flat", cursor="hand2"
+            font=("Segoe UI", 10, "bold"), padx=14, pady=5, relief="flat", cursor="hand2"
         )
-        btn_tab_prof.pack(side="right", padx=5)
+        btn_tab_prof.pack(side="right", padx=4)
 
         btn_tab_supp = tk.Button(
-            top_switcher, text="📑 تقرير مديونية ومشتريات المورد بالفترة",
+            top_switcher, text="📑 تقرير المورد بالفترة",
             command=lambda: self.open_supplier_period_statement_modal(),
-            font=("Segoe UI", 11, "bold"), padx=18, pady=6, relief="flat", cursor="hand2",
+            font=("Segoe UI", 10, "bold"), padx=14, pady=5, relief="flat", cursor="hand2",
             bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT
         )
-        btn_tab_supp.pack(side="right", padx=5)
+        btn_tab_supp.pack(side="right", padx=4)
 
         def switch_report_tab(tab_name):
             tab_state["current"] = tab_name
             for w in sub_content.winfo_children():
                 w.destroy()
 
+            # إعادة تعيين ألوان التبويبات
+            for b in (btn_tab_fin, btn_tab_gen, btn_tab_liq, btn_tab_prof, btn_tab_supp):
+                b.configure(bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT)
+
             if tab_name == "financial_center":
                 btn_tab_fin.configure(bg=self.COLOR_BLUE, fg="white")
-                btn_tab_prof.configure(bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT)
                 self._render_financial_center_tab(sub_content)
-            else:
+            elif tab_name == "general_transactions":
+                btn_tab_gen.configure(bg="#0284c7", fg="white")
+                self._render_general_transactions_tab(sub_content)
+            elif tab_name == "liquidity":
+                btn_tab_liq.configure(bg=self.COLOR_TEAL, fg="white")
+                self._render_liquidity_tab(sub_content)
+            elif tab_name == "profits_sales":
                 btn_tab_prof.configure(bg=self.COLOR_ACCENT, fg="white")
-                btn_tab_fin.configure(bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT)
                 self._render_profits_and_sales_tab(sub_content)
+            else:
+                btn_tab_fin.configure(bg=self.COLOR_BLUE, fg="white")
+                self._render_financial_center_tab(sub_content)
 
         switch_report_tab(active_tab)
 
@@ -5804,10 +5876,12 @@ class MasterMobileApp(tk.Tk):
         cap_val = fin.get('total_capital', 0)
         dev_cnt = fin.get('available_devices_count', 0)
 
+        gen_assets_val = fin.get('total_general_assets', 0)
         items = [
             ("💵 السيولة النقدية الفعلية بالخزينة:", fmt_curr(liq_val) if can_see_liq else "🔒 مخفي", "موجب (+)", "النقدية الفعلية الصافية الموجودة بالدرج/الخزينة", self.COLOR_ACCENT),
             ("📦 قيمة المخزون المتاح (سعر الشراء):", fmt_curr(inv_val) if can_see_buy else "🔒 مخفي", "موجب (+)", f"قيمة بضاعة المحل الحالية بالسوق ({dev_cnt} جهاز متاح)", self.COLOR_BLUE),
             ("💳 إجمالي ديون العملاء والخرج:", fmt_curr(cust_val), "موجب (+)", "أموال مستحقة للمحل بذمة الزبائن والعملاء", self.COLOR_WARN),
+            ("💼 مستحقات العهد والسلف والأصول:", fmt_curr(gen_assets_val), "موجب (+)", "عهد وسلف وأمانات معلقة قائمة طرف الغير لم تسترد بعد", "#56c8fc"),
             ("📥 رصيد مستحق لنا لدى الموردين:", fmt_curr(cred_val), "موجب (+)", "أموال مدفوعة ومحفوظة كأمانة أو رصيد دائن لدى الموردين", self.COLOR_TEAL),
             ("🏭 إجمالي مديونيات الموردين (المتبقي):", fmt_curr(supp_val), "سالب (-)", "فواتير بضاعة آجلة مطلوب سدادها للتجار والموردين", self.COLOR_DANGER),
         ]
@@ -5837,21 +5911,24 @@ class MasterMobileApp(tk.Tk):
         can_see_liq = self.has_permission('can_view_liquidity')
         can_see_buy = self.has_permission('can_view_buy_price')
 
-        cards_row = tk.Frame(parent_frame, bg=self.COLOR_BG)
-        cards_row.pack(fill="x", padx=18, pady=6)
-        for i in range(3):
+        scroll_center = self._create_scrollable_frame(parent_frame, bg_color=self.COLOR_BG, pad_x=18, pad_y=8)
+
+        # 1. كروت المركز المالي ورأس المال الشامل
+        cards_row = tk.Frame(scroll_center, bg=self.COLOR_BG)
+        cards_row.pack(fill="x", pady=4)
+        for i in range(4):
             cards_row.grid_columnconfigure(i, weight=1)
 
-        def build_metric_card(row_idx, col_idx, title, val_txt, subtitle, accent_col, extra_widget_fn=None):
-            c = tk.Frame(cards_row, bg=self.COLOR_CARD, padx=12, pady=10, highlightthickness=2, highlightbackground=accent_col)
-            c.grid(row=row_idx, column=col_idx, sticky="nsew", padx=5, pady=4)
+        def build_metric_card(parent_f, row_idx, col_idx, title, val_txt, subtitle, accent_col, extra_widget_fn=None, colspan=1):
+            c = tk.Frame(parent_f, bg=self.COLOR_CARD, padx=12, pady=10, highlightthickness=2, highlightbackground=accent_col)
+            c.grid(row=row_idx, column=col_idx, columnspan=colspan, sticky="nsew", padx=4, pady=4)
             hdr_f = tk.Frame(c, bg=self.COLOR_CARD)
             hdr_f.pack(fill="x")
-            tk.Label(hdr_f, text=title, font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(side="right")
+            tk.Label(hdr_f, text=fix_bidi(title), font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(side="right")
             if extra_widget_fn:
                 extra_widget_fn(hdr_f)
-            tk.Label(c, text=val_txt, font=("Segoe UI", 14, "bold"), bg=self.COLOR_CARD, fg=accent_col, pady=4).pack(anchor="e")
-            tk.Label(c, text=subtitle, font=("Segoe UI", 8, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(anchor="e")
+            tk.Label(c, text=fix_bidi(val_txt), font=("Segoe UI", 14, "bold"), bg=self.COLOR_CARD, fg=accent_col, pady=3).pack(anchor="e")
+            tk.Label(c, text=fix_bidi(subtitle), font=("Segoe UI", 8, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(anchor="e")
             return c
 
         liq_str = fmt_curr(fin.get('current_liquidity', 0)) if can_see_liq else "🔒 مخفي"
@@ -5859,28 +5936,628 @@ class MasterMobileApp(tk.Tk):
         cust_str = fmt_curr(fin.get('total_customer_debts', 0))
         supp_str = fmt_curr(fin.get('total_supplier_debts', 0))
         cred_str = fmt_curr(fin.get('supplier_credit', 0))
+        gen_assets_str = fmt_curr(fin.get('total_general_assets', 0))
         cap_str = fmt_curr(fin.get('total_capital', 0)) if (can_see_liq and can_see_buy) else "🔒 مخفي"
+        m_exp_str = fmt_curr(fin.get('monthly_operational_expenses', 0))
 
         def add_cap_btn(parent_hdr):
             tk.Button(
-                parent_hdr, text="🔍 تفاصيل رأس المال", command=lambda: self.show_capital_details_modal(fin),
+                parent_hdr, text="🔍 معادلة وتفاصيل رأس المال", command=lambda: self.show_capital_details_modal(fin),
                 bg=self.COLOR_ENTRY_BG, fg=self.COLOR_BLUE, font=("Segoe UI", 8, "bold"),
                 relief="flat", cursor="hand2", padx=5, pady=1
             ).pack(side="left")
 
-        build_metric_card(0, 2, "💵 السيولة النقدية المتاحة", liq_str, "النقدية الفعلية بالخزينة", self.COLOR_ACCENT)
-        build_metric_card(0, 1, "📦 قيمة المخزون المتاح", inv_str, f"الأجهزة المتاحة بالمخزون: {fin.get('available_devices_count', 0)}", self.COLOR_BLUE)
-        build_metric_card(0, 0, "💳 ديون العملاء (الخرج)", cust_str, "أموال مستحقة لدى العملاء بالخارج", self.COLOR_WARN)
+        # صف 0 (السيولة - المخزون - ديون العملاء - العهد والأصول)
+        build_metric_card(cards_row, 0, 3, "💵 السيولة النقدية المتاحة", liq_str, "النقدية الفعلية بالخزينة", self.COLOR_ACCENT)
+        build_metric_card(cards_row, 0, 2, "📦 قيمة المخزون المتاح", inv_str, f"الأجهزة المتاحة بالمخزون: {fin.get('available_devices_count', 0)}", self.COLOR_BLUE)
+        build_metric_card(cards_row, 0, 1, "💳 ديون العملاء (الخرج)", cust_str, "أموال مستحقة لدى العملاء بالخارج", self.COLOR_WARN)
+        build_metric_card(cards_row, 0, 0, "💼 مستحقات العهد والأصول", gen_assets_str, "عهد وسلف وأمانات قائمة طرف الغير (+)", "#56c8fc")
 
-        build_metric_card(1, 2, "📥 رصيد مستحق لنا لدى الموردين", cred_str, "أمانات وأرصدة دائنة لحسابنا (+ رأس المال)", self.COLOR_TEAL)
-        build_metric_card(1, 1, "🏭 مديونية الموردين (المتبقي)", supp_str, "مبالغ متبقية مطلوب سدادها للتجار (-)", self.COLOR_DANGER)
-        build_metric_card(1, 0, "🏦 صافي رأس المال الشامل", cap_str, "السيولة + المخزون + الخرج + رصيد الموردين - الديون", self.COLOR_PURPLE, extra_widget_fn=add_cap_btn)
+        # صف 1 (رصيدنا لدى الموردين - مديونية الموردين - رأس المال الشامل - المصروفات التشغيلية)
+        build_metric_card(cards_row, 1, 3, "📥 رصيد مستحق لنا لدى الموردين", cred_str, "أمانات وأرصدة دائنة لحسابنا (+)", self.COLOR_TEAL)
+        build_metric_card(cards_row, 1, 2, "🏭 مديونية الموردين (المتبقي)", supp_str, "مبالغ متبقية مطلوب سدادها للتجار (-)", self.COLOR_DANGER)
+        build_metric_card(cards_row, 1, 1, "🏦 صافي رأس المال الشامل", cap_str, "السيولة + المخزون + الخرج + الأصول - الديون", self.COLOR_PURPLE, extra_widget_fn=add_cap_btn)
+        build_metric_card(cards_row, 1, 0, "🏷️ مصروفات تشغيلية دورية", m_exp_str, "مصروفات مستهلكة مخصومة من الأرباح", "#f59e0b")
 
+        # 2. بانر المعادلة المحاسبية المعتمدة ومفاتيح الانتقال السريع
+        banner_card = tk.LabelFrame(
+            scroll_center, text=fix_bidi("📐 المعادلة المحاسبية المعتمدة لرأس المال والأصول"),
+            bg=self.COLOR_CARD, fg=self.COLOR_PURPLE, font=("Segoe UI", 11, "bold"), padx=16, pady=12
+        )
+        banner_card.pack(fill="x", pady=8)
+
+        eq_txt = (
+            "صافي رأس المال الإجمالي = (السيولة النقدية + تكلفة المخزون المتاح + ديون العملاء + رصيدنا لدى الموردين + مستحقات العهد والأصول القائمة) - مديونية الموردين\n"
+            "• عند صرف عهدة أو سلفة أو أمانة: تُخصم من السيولة وتُضاف فوراً للأصول والمستحقات، فيظل رأس المال الإجمالي متوازناً تماماً.\n"
+            "• عند شراء جهاز من مورد لديه رصيد دائن: يقوم النظام بخصم التكلفة تلقائياً من ديننا القديم وتسجيلها في الفاتورة وسندات الدفع."
+        )
+        tk.Label(
+            banner_card, text=fix_bidi(eq_txt), font=("Segoe UI", 10, "bold"),
+            bg=self.COLOR_CARD, fg=self.COLOR_TEXT, justify="right", anchor="e"
+        ).pack(fill="x", pady=4)
+
+        nav_shortcuts = tk.Frame(banner_card, bg=self.COLOR_CARD)
+        nav_shortcuts.pack(fill="x", pady=(8, 2))
+
+        tk.Button(
+            nav_shortcuts, text="💼 فتح شاشة المعاملات المالية والعهد والأصول",
+            command=lambda: self.view_reports(active_tab="general_transactions"),
+            bg="#0284c7", fg="white", font=("Segoe UI", 10, "bold"),
+            padx=16, pady=6, relief="flat", cursor="hand2"
+        ).pack(side="right", padx=4)
+
+        tk.Button(
+            nav_shortcuts, text="💰 فتح شاشة حركة السيولة والخزينة",
+            command=lambda: self.view_reports(active_tab="liquidity"),
+            bg=self.COLOR_TEAL, fg="white", font=("Segoe UI", 10, "bold"),
+            padx=16, pady=6, relief="flat", cursor="hand2"
+        ).pack(side="right", padx=4)
+
+        tk.Button(
+            nav_shortcuts, text="🔍 فحص تفاصيل ومكونات رأس المال",
+            command=lambda: self.show_capital_details_modal(fin),
+            bg=self.COLOR_PURPLE, fg="white", font=("Segoe UI", 10, "bold"),
+            padx=16, pady=6, relief="flat", cursor="hand2"
+        ).pack(side="right", padx=4)
+
+    def _render_general_transactions_tab(self, parent_frame):
+        scroll_gen = self._create_scrollable_frame(parent_frame, bg_color=self.COLOR_BG, pad_x=18, pad_y=8)
+
+        # 1. شريط الكروت الإحصائية الأربعة (#56c8fc، كحلي، أخضر، برتقالي)
+        fin = self.db.get_financial_summary()
+        gen_cards_row = tk.Frame(scroll_gen, bg=self.COLOR_BG)
+        gen_cards_row.pack(fill="x", pady=4)
+        for i in range(4):
+            gen_cards_row.grid_columnconfigure(i, weight=1)
+
+        def make_gen_stat(col_idx, title, val_txt, sub_txt, col_accent):
+            c = tk.Frame(gen_cards_row, bg=self.COLOR_CARD, padx=12, pady=10, highlightthickness=2, highlightbackground=col_accent)
+            c.grid(row=0, column=col_idx, sticky="nsew", padx=4)
+            tk.Label(c, text=fix_bidi(title), font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(anchor="e")
+            lbl_v = tk.Label(c, text=fix_bidi(val_txt), font=("Segoe UI", 14, "bold"), bg=self.COLOR_CARD, fg=col_accent, pady=2)
+            lbl_v.pack(anchor="e")
+            tk.Label(c, text=fix_bidi(sub_txt), font=("Segoe UI", 8, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(anchor="e")
+            return lbl_v
+
+        lbl_tot_disbursed = make_gen_stat(3, "📤 إجمالي المنصرف العام", fmt_curr(fin.get('total_general_disbursed', 0)), "عهد وسلف ومصروفات نقدية", self.COLOR_BLUE)
+        lbl_tot_refunded = make_gen_stat(2, "📥 إجمالي المسترد نقدياً", fmt_curr(fin.get('total_general_refunded', 0)), "تم استردادها لخزينة السيولة", self.COLOR_ACCENT)
+        lbl_tot_assets = make_gen_stat(1, "💼 مستحقات قائمة لنا (أصول)", fmt_curr(fin.get('total_general_assets', 0)), "عهد وسلف غير مستردة طرف الغير (+)", "#56c8fc")
+        lbl_tot_exp = make_gen_stat(0, "🏷️ مصروفات تشغيلية نهائية", fmt_curr(fin.get('total_operational_expenses', 0)), "مستهلكة ومخصومة من الأرباح", "#f59e0b")
+
+        # 2. نموذج الإدخال السريع الذكي (Quick Entry Form)
+        form_card = tk.LabelFrame(
+            scroll_gen, text=fix_bidi("➕ تسجيل معاملة مالية جديدة (عهدة / سلفة موظف / تحويل / أمانة / مصروف تشغيلي)"),
+            bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"), padx=14, pady=10
+        )
+        form_card.pack(fill="x", pady=8)
+
+        r1 = tk.Frame(form_card, bg=self.COLOR_CARD)
+        r1.pack(fill="x", pady=4)
+
+        tk.Label(r1, text="نوع المعاملة:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(0, 4))
+        trans_options = [
+            ("💼 عهدة لقسم أو شخص (تُضاف للأصول)", "CUSTODY"),
+            ("💵 سلفة موظف (تُضاف للأصول)", "ADVANCE"),
+            ("🔄 تحويل بين الخزائن (تُضاف للأصول)", "TRANSFER"),
+            ("🔒 أمانة معلقة طرف الغير (تُضاف للأصول)", "SECURITY_DEPOSIT"),
+            ("🏷️ مصروف تشغيلي نهائي (يُخصم من الأرباح)", "OPERATIONAL_EXP")
+        ]
+        trans_labels = [x[0] for x in trans_options]
+        trans_code_by_label = {x[0]: x[1] for x in trans_options}
+
+        cb_trans_type = ttk.Combobox(r1, values=trans_labels, state="readonly", width=34, font=("Segoe UI", 10, "bold"), justify="right")
+        cb_trans_type.current(0)
+        cb_trans_type.pack(side="right", padx=4, ipady=3)
+
+        tk.Label(r1, text="المستلم / القسم:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(10, 4))
+        rec_presets = self.db.get_financial_presets('RECIPIENT')
+        cb_recipient = ttk.Combobox(r1, values=rec_presets, width=22, font=("Segoe UI", 11, "bold"), justify="right")
+        if rec_presets:
+            cb_recipient.set(rec_presets[0])
+        cb_recipient.pack(side="right", padx=4, ipady=3)
+        self.attach_autocomplete(cb_recipient, lambda: self.db.get_financial_presets('RECIPIENT'))
+
+        tk.Label(r1, text="البيان / الغرض:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(10, 4))
+        cat_presets = self.db.get_financial_presets('CATEGORY')
+        cb_category = ttk.Combobox(r1, values=cat_presets, width=24, font=("Segoe UI", 11, "bold"), justify="right")
+        if cat_presets:
+            cb_category.set(cat_presets[0])
+        cb_category.pack(side="right", fill="x", expand=True, padx=4, ipady=3)
+        self.attach_autocomplete(cb_category, lambda: self.db.get_financial_presets('CATEGORY'))
+
+        r2 = tk.Frame(form_card, bg=self.COLOR_CARD)
+        r2.pack(fill="x", pady=6)
+
+        tk.Label(r2, text="المبلغ (ج.م):", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(0, 4))
+        ent_gen_amt = tk.Entry(r2, validate="key", validatecommand=self.vcmd_num, font=("Segoe UI", 12, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_ACCENT, insertbackground=self.COLOR_TEXT, justify="center", width=14)
+        ent_gen_amt.pack(side="right", padx=4, ipady=3)
+
+        tk.Label(r2, text="طريقة الدفع:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(10, 4))
+        pay_methods = ['كاش', 'فودافون كاش', 'إنستاباي', 'تحويل بنكي', 'شيك']
+        cb_pay_method = ttk.Combobox(r2, values=pay_methods, state="readonly", width=14, font=("Segoe UI", 10, "bold"), justify="right")
+        cb_pay_method.current(0)
+        cb_pay_method.pack(side="right", padx=4, ipady=3)
+
+        tk.Label(r2, text="ملاحظات وتفاصيل:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(10, 4))
+        ent_gen_notes = tk.Entry(r2, font=("Segoe UI", 10, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, justify="right")
+        ent_gen_notes.pack(side="right", fill="x", expand=True, padx=4, ipady=3)
+
+        r3 = tk.Frame(form_card, bg=self.COLOR_CARD)
+        r3.pack(fill="x", pady=(4, 0))
+
+        get_gen_custom_date = self._create_operation_date_picker(r3, label_text="تاريخ وتوقيت العملية:")
+
+        def submit_general_transaction():
+            if not self.has_permission('can_add_general_transaction'):
+                messagebox.showerror("صلاحيات غير كافية", "عفواً، لا تملك صلاحية تسجيل المعاملات المالية العامة!")
+                return
+
+            t_lbl = cb_trans_type.get()
+            t_code = trans_code_by_label.get(t_lbl, 'OPERATIONAL_EXP')
+            rec_val = cb_recipient.get().strip()
+            cat_val = cb_category.get().strip()
+            pm_val = cb_pay_method.get().strip() or 'كاش'
+            notes_v = ent_gen_notes.get().strip()
+
+            if not rec_val or not cat_val:
+                messagebox.showwarning("تنبيه", "يرجى كتابة اسم المستلم والبيان / الغرض بشكل صحيح!")
+                return
+
+            try:
+                amt_val = float(ent_gen_amt.get().strip() or 0)
+            except ValueError:
+                amt_val = 0.0
+
+            if amt_val <= 0:
+                messagebox.showwarning("تنبيه", "يرجى إدخال مبلغ صحيح أكبر من الصفر!")
+                ent_gen_amt.focus_set()
+                return
+
+            try:
+                c_dt = get_gen_custom_date()
+            except ValueError as err_dt:
+                messagebox.showerror("خطأ في التاريخ", str(err_dt))
+                return
+
+            is_asset_type = (t_code != 'OPERATIONAL_EXP')
+            confirm_msg = (
+                f"تأكيد تسجيل المعاملة المالية:\n\n"
+                f"• النوع: {t_lbl}\n"
+                f"• المستلم / القسم: {rec_val}\n"
+                f"• البيان / الغرض: {cat_val}\n"
+                f"• المبلغ: {fmt_curr(amt_val)}\n"
+                f"• طريقة الدفع: {pm_val}\n"
+                f"• الأثر المحاسبي: {'تُضاف للأصول والمستحقات القائمة (رأس المال متوازن)' if is_asset_type else 'تُخصم مباشرة من الأرباح والسيولة'}"
+            )
+            if not messagebox.askyesno("تأكيد تسجيل المعاملة", confirm_msg):
+                return
+
+            try:
+                tx_id = self.db.add_general_transaction(
+                    trans_type=t_code,
+                    recipient=rec_val,
+                    category=cat_val,
+                    amount=amt_val,
+                    payment_method=pm_val,
+                    notes=notes_v,
+                    user_id=self.current_user_id,
+                    custom_date=c_dt
+                )
+                messagebox.showinfo("تم التسجيل بنجاح", f"تم تسجيل المعاملة المالية #{tx_id} بنجاح وتحديث الأصول ورأس المال!")
+                ent_gen_amt.delete(0, tk.END)
+                ent_gen_notes.delete(0, tk.END)
+                cb_recipient['values'] = self.db.get_financial_presets('RECIPIENT')
+                cb_category['values'] = self.db.get_financial_presets('CATEGORY')
+                refresh_gen_table()
+            except Exception as ex:
+                messagebox.showerror("خطأ", str(ex))
+
+        self._bind_enter_chain([ent_gen_amt, ent_gen_notes], final_callback=submit_general_transaction)
+
+        tk.Button(
+            r3, text="💾 حفظ وتسجيل المعاملة", command=submit_general_transaction,
+            bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"),
+            padx=18, pady=5, relief="flat", cursor="hand2"
+        ).pack(side="right", padx=(10, 4))
+
+        # 3. شريط الفلاتر والبحث في جدول المعاملات
+        filter_box = tk.Frame(scroll_gen, bg=self.COLOR_CARD, padx=12, pady=8, highlightthickness=1, highlightbackground=self.COLOR_BORDER)
+        filter_box.pack(fill="x", pady=6)
+
+        tk.Label(filter_box, text="🔍 بحث:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=4)
+        gen_search_ent = tk.Entry(filter_box, font=("Segoe UI", 10, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, justify="right", width=18)
+        gen_search_ent.pack(side="right", padx=4, ipady=2)
+
+        tk.Label(filter_box, text="النوع:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(8, 4))
+        type_filter_cb = ttk.Combobox(filter_box, values=["الكل", "العهد فقط (CUSTODY)", "السلف فقط (ADVANCE)", "التحويلات (TRANSFER)", "الأمانات (SECURITY_DEPOSIT)", "المصروفات التشغيلية (OPERATIONAL_EXP)"], state="readonly", width=18, font=("Segoe UI", 9, "bold"), justify="right")
+        type_filter_cb.current(0)
+        type_filter_cb.pack(side="right", padx=4, ipady=2)
+
+        tk.Label(filter_box, text="الحالة:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=(8, 4))
+        status_filter_cb = ttk.Combobox(filter_box, values=["الكل", "قائم (غير مسترد بالكامل)", "مسترد جزئياً", "مسترد بالكامل"], state="readonly", width=16, font=("Segoe UI", 9, "bold"), justify="right")
+        status_filter_cb.current(0)
+        status_filter_cb.pack(side="right", padx=4, ipady=2)
+
+        tk.Button(
+            filter_box, text="💵 استرداد دفعة نقدية",
+            command=lambda: open_selected_refund(),
+            bg="#0284c7", fg="white", font=("Segoe UI", 9, "bold"),
+            padx=14, pady=3, relief="flat", cursor="hand2"
+        ).pack(side="left", padx=4)
+
+        tk.Button(
+            filter_box, text="📜 تفاصيل المعاملة",
+            command=lambda: open_selected_details(),
+            bg=self.COLOR_INDIGO, fg="white", font=("Segoe UI", 9, "bold"),
+            padx=12, pady=3, relief="flat", cursor="hand2"
+        ).pack(side="left", padx=4)
+
+        tk.Button(
+            filter_box, text="🔄 تحديث",
+            command=lambda: refresh_gen_table(),
+            bg=self.COLOR_TEAL, fg="white", font=("Segoe UI", 9, "bold"),
+            padx=12, pady=3, relief="flat", cursor="hand2"
+        ).pack(side="left", padx=4)
+
+        # 4. جدول المعاملات المالية العامة
+        table_card = tk.Frame(scroll_gen, bg=self.COLOR_CARD, padx=10, pady=8)
+        table_card.pack(fill="both", expand=True, pady=4)
+
+        cols = ("الحالة", "التاريخ والوقت", "المتبقي القائم (الأصل)", "المسترد نقدياً", "المبلغ المنصرف", "طريقة الدفع", "البيان / الغرض", "المستلم / الجهة", "نوع المعاملة", "كود")
+        gtree = ttk.Treeview(table_card, columns=cols, show="headings", height=9)
+        self.configure_tree_row_colors(gtree)
+
+        g_widths = {
+            "الحالة": 115, "التاريخ والوقت": 135, "المتبقي القائم (الأصل)": 130, "المسترد نقدياً": 110,
+            "المبلغ المنصرف": 115, "طريقة الدفع": 95, "البيان / الغرض": 160, "المستلم / الجهة": 140,
+            "نوع المعاملة": 125, "كود": 65
+        }
+        for c in cols:
+            gtree.heading(c, text=c)
+            gtree.column(c, anchor="center", width=g_widths.get(c, 110))
+
+        vsb = ttk.Scrollbar(table_card, orient="vertical", command=gtree.yview)
+        hsb = ttk.Scrollbar(table_card, orient="horizontal", command=gtree.xview)
+        gtree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side="left", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        gtree.pack(side="right", fill="both", expand=True)
+
+        transactions_map = {}
+
+        def refresh_gen_table(event=None):
+            gtree.delete(*gtree.get_children())
+            transactions_map.clear()
+
+            # تحديث الكروت الإحصائية العلوية
+            fresh_fin = self.db.get_financial_summary()
+            lbl_tot_disbursed.config(text=fmt_curr(fresh_fin.get('total_general_disbursed', 0)))
+            lbl_tot_refunded.config(text=fmt_curr(fresh_fin.get('total_general_refunded', 0)))
+            lbl_tot_assets.config(text=fmt_curr(fresh_fin.get('total_general_assets', 0)))
+            lbl_tot_exp.config(text=fmt_curr(fresh_fin.get('total_operational_expenses', 0)))
+
+            q = gen_search_ent.get().strip().lower()
+            tf = type_filter_cb.get()
+            sf = status_filter_cb.get()
+
+            trans_code = None
+            if "CUSTODY" in tf: trans_code = "CUSTODY"
+            elif "ADVANCE" in tf: trans_code = "ADVANCE"
+            elif "TRANSFER" in tf: trans_code = "TRANSFER"
+            elif "SECURITY_DEPOSIT" in tf: trans_code = "SECURITY_DEPOSIT"
+            elif "OPERATIONAL_EXP" in tf: trans_code = "OPERATIONAL_EXP"
+
+            status_code = None
+            if "غير مسترد" in sf: status_code = "OPEN"
+            elif "جزئياً" in sf: status_code = "PARTIALLY_REFUNDED"
+            elif "بالكامل" in sf: status_code = "FULLY_REFUNDED"
+
+            rows = self.db.get_general_transactions(trans_type=trans_code, status=status_code, search_query=q)
+
+            type_ar_names = {
+                'CUSTODY': '💼 عهدة قائمة',
+                'ADVANCE': '💵 سلفة موظف',
+                'TRANSFER': '🔄 تحويل خزينة',
+                'SECURITY_DEPOSIT': '🔒 أمانة معلقة',
+                'DEPOSIT': '🔒 أمانة معلقة',
+                'OPERATIONAL_EXP': '🏷️ مصروف نهائي'
+            }
+
+            status_ar_names = {
+                'OPEN': 'قائم (غير مسترد) 🔴',
+                'PARTIALLY_REFUNDED': 'مسترد جزئياً 🟡',
+                'FULLY_REFUNDED': 'مسترد بالكامل 🟢'
+            }
+
+            for idx_t, r in enumerate(rows, 1):
+                tid = r['id']
+                transactions_map[tid] = r
+                t_type = r.get('trans_type')
+                is_asset = r.get('is_asset')
+                rem_val = float(r.get('remaining_amount') or 0)
+                refunded_val = float(r.get('paid_back_amount') or 0)
+                tot_amt = float(r.get('amount') or 0)
+
+                if is_asset:
+                    st_txt = status_ar_names.get(r.get('status'), 'قائم')
+                    rem_str = fmt_curr(rem_val)
+                else:
+                    st_txt = "مستهلك (نهائي) 🏷️"
+                    rem_str = "-"
+
+                row_tag = 'evenrow' if idx_t % 2 == 0 else 'oddrow'
+                gtree.insert("", "end", iid=str(tid), tags=(row_tag,), values=(
+                    fix_bidi(st_txt),
+                    r.get('date_formatted') or "-",
+                    fix_bidi(rem_str),
+                    fmt_curr(refunded_val) if is_asset else "-",
+                    fmt_curr(tot_amt),
+                    fix_bidi(r.get('payment_method') or "كاش"),
+                    fix_bidi(r.get('category') or "-"),
+                    fix_bidi(r.get('recipient') or "-"),
+                    fix_bidi(type_ar_names.get(t_type, t_type)),
+                    f"#{tid}"
+                ))
+
+            self.after(50, lambda: gtree.xview_moveto(1.0))
+
+        def get_selected_gen_tx():
+            sel = gtree.selection()
+            if not sel:
+                messagebox.showwarning("تنبيه", "يرجى تحديد معاملة من الجدول أولاً!")
+                return None
+            return transactions_map.get(clean_id_val(sel[0]))
+
+        def open_selected_refund():
+            tx = get_selected_gen_tx()
+            if tx:
+                self.open_refund_general_transaction_modal(tx, on_success_callback=refresh_gen_table)
+
+        def open_selected_details():
+            tx = get_selected_gen_tx()
+            if tx:
+                self.show_general_transaction_details_modal(tx, on_updated_callback=refresh_gen_table)
+
+        def on_gtree_double_click(event):
+            tx = get_selected_gen_tx()
+            if not tx:
+                return
+            if tx.get('is_asset') and float(tx.get('remaining_amount') or 0) > 0.01:
+                open_selected_refund()
+            else:
+                open_selected_details()
+
+        gtree.bind("<Double-1>", on_gtree_double_click)
+        gen_search_ent.bind("<KeyRelease>", lambda e: self.debounce("gen_search", refresh_gen_table, 250))
+        type_filter_cb.bind("<<ComboboxSelected>>", refresh_gen_table)
+        status_filter_cb.bind("<<ComboboxSelected>>", refresh_gen_table)
+        refresh_gen_table()
+
+    def open_refund_general_transaction_modal(self, tx_obj, on_success_callback=None):
+        """نافذة استرداد العهد والسلف والأمانات نقداً للخزينة"""
+        if not self.has_permission('can_refund_general_transaction'):
+            messagebox.showerror("صلاحيات غير كافية", "عفواً، لا تملك صلاحية استرداد العهد والسلف!")
+            return
+
+        if not tx_obj.get('is_asset'):
+            messagebox.showwarning("تنبيه", "هذه المعاملة تم تسجيلها كمصروف نهائي مستهلك ولا تحتوي على مستحقات استرداد!")
+            return
+
+        rem_val = float(tx_obj.get('remaining_amount') or 0)
+        if rem_val <= 0.01:
+            messagebox.showinfo("تنبيه", "تم استرداد كامل قيمة هذه المعاملة مسبقاً (المتبقي: 0.00 ج.م)!")
+            return
+
+        rwin = tk.Toplevel(self)
+        rwin.title(f"استرداد دفعة نقدية - معاملة #{tx_obj['id']}")
+        rwin.geometry("520x420")
+        rwin.configure(bg=self.COLOR_BG)
+        rwin.grab_set()
+
+        top_b = tk.Frame(rwin, bg=self.COLOR_TOPBAR, pady=10, padx=16)
+        top_b.pack(fill="x")
+        tk.Label(
+            top_b, text=fix_bidi(f"💵 استرداد عهدة / سلفة #{tx_obj['id']}: {tx_obj.get('recipient')}"),
+            font=("Segoe UI", 12, "bold"), bg=self.COLOR_TOPBAR, fg="#56c8fc"
+        ).pack(side="right")
+
+        body = tk.Frame(rwin, bg=self.COLOR_CARD, padx=18, pady=14, highlightthickness=1, highlightbackground=self.COLOR_BORDER)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+
+        info_pairs = [
+            [("نوع المعاملة:", tx_obj.get('trans_type') or "-"), ("كود المعاملة:", f"#{tx_obj['id']}")],
+            [("المستلم / القسم:", tx_obj.get('recipient') or "-"), ("البيان / الغرض:", tx_obj.get('category') or "-")],
+            [("إجمالي المبلغ المنصرف:", fmt_curr(tx_obj.get('amount'))), ("المسترد سابقاً:", fmt_curr(tx_obj.get('paid_back_amount')))],
+        ]
+        self._build_rtl_info_grid(body, info_pairs)
+
+        rem_box = tk.Frame(body, bg=self.COLOR_ENTRY_BG, padx=10, pady=8, highlightthickness=1, highlightbackground="#56c8fc")
+        rem_box.pack(fill="x", pady=8)
+        tk.Label(rem_box, text=fix_bidi(f"المبلغ القائم المتبقي للاسترداد: {fmt_curr(rem_val)}"), font=("Segoe UI", 12, "bold"), bg=self.COLOR_ENTRY_BG, fg="#56c8fc").pack()
+
+        in_f = tk.Frame(body, bg=self.COLOR_CARD)
+        in_f.pack(fill="x", pady=4)
+
+        tk.Label(in_f, text="المبلغ المسترد (ج.م):", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=6)
+        ent_ref_amt = tk.Entry(in_f, validate="key", validatecommand=self.vcmd_num, font=("Segoe UI", 12, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_ACCENT, insertbackground=self.COLOR_TEXT, justify="center", width=14)
+        ent_ref_amt.insert(0, fmt_num(rem_val))
+        ent_ref_amt.pack(side="right", padx=4, ipady=3)
+        ent_ref_amt.focus_set()
+        ent_ref_amt.select_range(0, tk.END)
+
+        tk.Button(
+            in_f, text="كامل المتبقي",
+            command=lambda: (ent_ref_amt.delete(0, tk.END), ent_ref_amt.insert(0, fmt_num(rem_val))),
+            bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 9, "bold"),
+            padx=8, pady=2, relief="flat", cursor="hand2"
+        ).pack(side="left", padx=4)
+
+        pm_f = tk.Frame(body, bg=self.COLOR_CARD)
+        pm_f.pack(fill="x", pady=4)
+        tk.Label(pm_f, text="طريقة الاستلام:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=6)
+        cb_ref_pm = ttk.Combobox(pm_f, values=['كاش', 'فودافون كاش', 'إنستاباي', 'تحويل بنكي'], state="readonly", width=16, font=("Segoe UI", 10, "bold"), justify="right")
+        cb_ref_pm.current(0)
+        cb_ref_pm.pack(side="right", padx=4, ipady=2)
+
+        nt_f = tk.Frame(body, bg=self.COLOR_CARD)
+        nt_f.pack(fill="x", pady=4)
+        tk.Label(nt_f, text="ملاحظات الاسترداد:", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="right", padx=6)
+        ent_ref_nt = tk.Entry(nt_f, font=("Segoe UI", 10, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, justify="right")
+        ent_ref_nt.pack(side="right", fill="x", expand=True, padx=4, ipady=2)
+
+        get_ref_custom_date = self._create_operation_date_picker(body, label_text="تاريخ الاسترداد:")
+
+        def confirm_refund_action():
+            try:
+                amt = float(ent_ref_amt.get().strip() or 0)
+            except ValueError:
+                amt = 0.0
+
+            if amt <= 0 or amt > (rem_val + 0.01):
+                messagebox.showwarning("تنبيه", f"يرجى إدخال مبلغ صحيح بين 1 وحتى {fmt_curr(rem_val)}!", parent=rwin)
+                return
+
+            try:
+                c_dt = get_ref_custom_date()
+            except ValueError as err_dt:
+                messagebox.showerror("خطأ في التاريخ", str(err_dt), parent=rwin)
+                return
+
+            try:
+                self.db.refund_general_transaction(
+                    transaction_id=tx_obj['id'],
+                    refund_amount=amt,
+                    payment_method=cb_ref_pm.get(),
+                    notes=ent_ref_nt.get().strip(),
+                    user_id=self.current_user_id,
+                    custom_date=c_dt
+                )
+                messagebox.showinfo("تم الاسترداد", f"تم استرداد {fmt_curr(amt)} نقداً وإيداعها في خزينة السيولة وتخفيض الأصول القائمة بنجاح!", parent=rwin)
+                rwin.destroy()
+                if on_success_callback:
+                    on_success_callback()
+            except Exception as ex:
+                messagebox.showerror("خطأ", str(ex), parent=rwin)
+
+        ent_ref_amt.bind("<Return>", lambda e: confirm_refund_action())
+
+        bot_b = tk.Frame(rwin, bg=self.COLOR_TOPBAR, pady=8, padx=16)
+        bot_b.pack(side="bottom", fill="x")
+
+        tk.Button(
+            bot_b, text="✅ تأكيد الاسترداد للخزينة", command=confirm_refund_action,
+            bg=self.COLOR_ACCENT, fg="white", font=("Segoe UI", 10, "bold"),
+            padx=18, pady=4, relief="flat", cursor="hand2"
+        ).pack(side="right", padx=4)
+
+        tk.Button(
+            bot_b, text="إلغاء", command=rwin.destroy,
+            bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 10, "bold"),
+            padx=14, pady=4, relief="flat", cursor="hand2"
+        ).pack(side="left", padx=4)
+
+    def show_general_transaction_details_modal(self, tx_obj, on_updated_callback=None):
+        """عرض بطاقة تفاصيل المعاملة المالية العامة وسجل دفعات الاسترداد"""
+        dwin = tk.Toplevel(self)
+        dwin.title(f"تفاصيل المعاملة المالية #{tx_obj['id']}")
+        dwin.geometry("780x560")
+        dwin.configure(bg=self.COLOR_BG)
+        dwin.grab_set()
+
+        top_b = tk.Frame(dwin, bg=self.COLOR_TOPBAR, pady=10, padx=16)
+        top_b.pack(fill="x")
+        tk.Label(
+            top_b, text=fix_bidi(f"📋 تفاصيل المعاملة #{tx_obj['id']}  |  {tx_obj.get('recipient')}"),
+            font=("Segoe UI", 13, "bold"), bg=self.COLOR_TOPBAR, fg="#56c8fc"
+        ).pack(side="right")
+
+        bot_b = tk.Frame(dwin, bg=self.COLOR_TOPBAR, pady=8, padx=16)
+        bot_b.pack(side="bottom", fill="x")
+        tk.Button(bot_b, text="إغلاق", command=dwin.destroy, bg=self.COLOR_DANGER, fg="white", font=("Segoe UI", 10, "bold"), padx=16, pady=4, relief="flat", cursor="hand2").pack(side="left")
+
+        scroll_b = self._create_scrollable_frame(dwin, bg_color=self.COLOR_BG, pad_x=16, pad_y=10)
+
+        card = tk.LabelFrame(scroll_b, text="📌 بيانات المعاملة المالية والأثر المحاسبي", bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"), padx=14, pady=10)
+        card.pack(fill="x", pady=6)
+
+        is_asset = tx_obj.get('is_asset')
+        info_pairs = [
+            [("كود المعاملة:", f"#{tx_obj['id']}"), ("نوع الحركة:", tx_obj.get('trans_type') or "-")],
+            [("المستلم / القسم:", tx_obj.get('recipient') or "-"), ("البيان / الغرض:", tx_obj.get('category') or "-")],
+            [("المبلغ المنصرف:", fmt_curr(tx_obj.get('amount'))), ("طريقة الدفع:", tx_obj.get('payment_method') or "كاش")],
+            [("المسترد نقدياً:", fmt_curr(tx_obj.get('paid_back_amount')) if is_asset else "-"), ("المتبقي القائم (الأصل):", fmt_curr(tx_obj.get('remaining_amount')) if is_asset else "-")],
+            [("حالة الاسترداد:", tx_obj.get('status') or "-"), ("التاريخ والوقت:", tx_obj.get('date_formatted') or "-")],
+            [("المسؤول المسجل:", tx_obj.get('user_name') or "-"), ("ملاحظات وبيان:", tx_obj.get('notes') or "-")]
+        ]
+        self._build_rtl_info_grid(card, info_pairs)
+
+        # جدول سجل الدفعات المستردة إن وجدت
+        refunds = self.db.get_general_transaction_refunds(tx_obj['id'])
+        r_card = tk.LabelFrame(scroll_b, text="💳 سجل الدفعات المستردة نقداً لهذه المعاملة", bg=self.COLOR_CARD, fg=self.COLOR_ACCENT, font=("Segoe UI", 11, "bold"), padx=12, pady=8)
+        r_card.pack(fill="both", expand=True, pady=6)
+
+        if refunds:
+            r_cols = ("المسؤول المستلم", "ملاحظات", "طريقة الاستلام", "تاريخ الاسترداد", "المبلغ المسترد", "م")
+            rtree = ttk.Treeview(r_card, columns=r_cols, show="headings", height=max(3, min(6, len(refunds) + 1)))
+            self.configure_tree_row_colors(rtree)
+            for rc in r_cols:
+                rtree.heading(rc, text=rc)
+                rtree.column(rc, anchor="center", width=140 if rc != "م" else 50)
+            rtree.pack(fill="x", pady=4)
+
+            for idx_rf, rf in enumerate(refunds, 1):
+                row_tag = 'evenrow' if idx_rf % 2 == 0 else 'oddrow'
+                rtree.insert("", "end", tags=(row_tag,), values=(
+                    fix_bidi(rf.get('user_name') or "-"),
+                    fix_bidi(rf.get('notes') or "-"),
+                    fix_bidi(rf.get('payment_method') or "كاش"),
+                    rf.get('date_formatted') or "-",
+                    fmt_curr(rf.get('refund_amount')),
+                    idx_rf
+                ))
+        else:
+            tk.Label(r_card, text="لا توجد دفعات استرداد مسجلة حتى الآن.", font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(pady=8)
+
+        if is_asset and float(tx_obj.get('remaining_amount') or 0) > 0.01:
+            btn_ref_f = tk.Frame(scroll_b, bg=self.COLOR_BG, pady=6)
+            btn_ref_f.pack(fill="x")
+            def do_ref():
+                dwin.destroy()
+                self.open_refund_general_transaction_modal(tx_obj, on_success_callback=on_updated_callback)
+            tk.Button(
+                btn_ref_f, text="💵 استرداد دفعة نقدية الآن", command=do_ref,
+                bg="#0284c7", fg="white", font=("Segoe UI", 10, "bold"),
+                padx=18, pady=5, relief="flat", cursor="hand2"
+            ).pack(side="right")
+
+    def _render_liquidity_tab(self, parent_frame):
+        """تبويب حركة السيولة المباشرة والخزينة"""
+        fin = self.db.get_financial_summary()
+        scroll_liq = self._create_scrollable_frame(parent_frame, bg_color=self.COLOR_BG, pad_x=18, pad_y=8)
+
+        # كروت السيولة
+        l_cards = tk.Frame(scroll_liq, bg=self.COLOR_BG)
+        l_cards.pack(fill="x", pady=4)
+        l_cards.columnconfigure((0, 1, 2), weight=1)
+
+        def make_l_card(col_idx, title, val_s, col_c):
+            f = tk.Frame(l_cards, bg=self.COLOR_CARD, padx=14, pady=10, highlightthickness=2, highlightbackground=col_c)
+            f.grid(row=0, column=col_idx, sticky="nsew", padx=5)
+            tk.Label(f, text=fix_bidi(title), font=("Segoe UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(anchor="e")
+            lbl_v = tk.Label(f, text=fix_bidi(val_s), font=("Segoe UI", 14, "bold"), bg=self.COLOR_CARD, fg=col_c, pady=4)
+            lbl_v.pack(anchor="e")
+            return lbl_v
+
+        make_l_card(2, "💵 السيولة النقدية المتاحة", fmt_curr(fin.get('current_liquidity', 0)), self.COLOR_ACCENT)
+        make_l_card(1, "📥 إجمالي تغذية السيولة (+)", fmt_curr(fin.get('total_injections', 0)), self.COLOR_BLUE)
+        make_l_card(0, "💼 أصول ومستحقات قائمة طرف الغير", fmt_curr(fin.get('total_general_assets', 0)), "#56c8fc")
+
+        # نموذج إضافة وحركة السيولة
         liq_section = tk.LabelFrame(
-            parent_frame, text="💰 إدارة السيولة النقدية وحركات الخزينة",
+            scroll_liq, text=fix_bidi("💰 تسجيل حركة سيولة نقدية مباشرة (إيداع / سحب)"),
             bg=self.COLOR_CARD, fg=self.COLOR_ACCENT, font=("Segoe UI", 12, "bold"), padx=16, pady=12
         )
-        liq_section.pack(fill="x", padx=18, pady=8)
+        liq_section.pack(fill="x", pady=8)
 
         if self.has_permission('can_add_liquidity'):
             form_row1 = tk.Frame(liq_section, bg=self.COLOR_CARD)
@@ -5897,7 +6574,7 @@ class MasterMobileApp(tk.Tk):
 
             tk.Label(form_row1, text="البيان / الملاحظة:", bg=self.COLOR_CARD, fg=self.COLOR_TEXT, font=("Segoe UI", 10, "bold")).pack(side="right", padx=(10, 4))
             ent_liq_note = tk.Entry(form_row1, font=("Segoe UI", 11, "bold"), bg=self.COLOR_ENTRY_BG, fg=self.COLOR_TEXT, insertbackground=self.COLOR_TEXT, justify="right", width=26)
-            ent_liq_note.pack(side="right", padx=4, ipady=3)
+            ent_liq_note.pack(side="right", fill="x", expand=True, padx=4, ipady=3)
 
             form_row2 = tk.Frame(liq_section, bg=self.COLOR_CARD)
             form_row2.pack(fill="x", pady=(6, 2))
@@ -5927,7 +6604,7 @@ class MasterMobileApp(tk.Tk):
                 try:
                     self.db.add_capital_transaction(amt, t_type, note_v, self.current_user_id, custom_date=l_dt)
                     messagebox.showinfo("تم الحفظ", "تم تسجيل حركة السيولة وتحديث المركز المالي بنجاح!")
-                    self.view_reports(active_tab="financial_center")
+                    self.view_reports(active_tab="liquidity")
                 except Exception as ex:
                     messagebox.showerror("خطأ", str(ex))
 
@@ -5939,51 +6616,43 @@ class MasterMobileApp(tk.Tk):
                 padx=16, pady=4, relief="flat", cursor="hand2"
             ).pack(side="right", padx=(12, 4))
 
-            if self.has_permission('can_view_liquidity_log'):
-                tk.Button(
-                    form_row2, text="📜 سجل وتفاصيل حركات السيولة",
-                    command=self.open_liquidity_log_modal,
-                    bg=self.COLOR_BLUE, fg="white", font=("Segoe UI", 10, "bold"),
-                    padx=14, pady=4, relief="flat", cursor="hand2"
-                ).pack(side="left", padx=4)
+        # جدول سجل حركات السيولة
+        recent_card = tk.LabelFrame(
+            scroll_liq, text=fix_bidi("📋 سجل حركات السيولة والتغذية والسحب"),
+            bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"), padx=14, pady=10
+        )
+        recent_card.pack(fill="both", expand=True, pady=8)
 
-        if self.current_user and self.current_user.get('role') == 'admin':
-            recent_card = tk.LabelFrame(
-                parent_frame, text="📋 سجل حركات السيولة (التاريخ - المضيف - المبلغ - الملاحظة)",
-                bg=self.COLOR_CARD, fg=self.COLOR_BLUE, font=("Segoe UI", 11, "bold"), padx=14, pady=10
-            )
-            recent_card.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+        cols = ("الملاحظة / البيان", "المبلغ", "نوع الحركة", "المضيف", "التاريخ والوقت", "م")
+        ltree = ttk.Treeview(recent_card, columns=cols, show="headings", height=10)
+        self.configure_tree_row_colors(ltree)
+        l_widths = {"الملاحظة / البيان": 280, "المبلغ": 130, "نوع الحركة": 120, "المضيف": 150, "التاريخ والوقت": 150, "م": 65}
+        for c in cols:
+            ltree.heading(c, text=c)
+            ltree.column(c, anchor="center", width=l_widths.get(c, 120))
 
-            cols = ("الملاحظة / البيان", "المبلغ", "نوع الحركة", "المضيف", "التاريخ والوقت", "م")
-            ltree = ttk.Treeview(recent_card, columns=cols, show="headings")
-            self.configure_tree_row_colors(ltree)
-            l_widths = {"الملاحظة / البيان": 280, "المبلغ": 130, "نوع الحركة": 120, "المضيف": 150, "التاريخ والوقت": 150, "م": 65}
-            for c in cols:
-                ltree.heading(c, text=c)
-                ltree.column(c, anchor="center", width=l_widths.get(c, 120))
+        vsb = ttk.Scrollbar(recent_card, orient="vertical", command=ltree.yview)
+        ltree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="left", fill="y")
+        ltree.pack(side="right", fill="both", expand=True)
 
-            vsb = ttk.Scrollbar(recent_card, orient="vertical", command=ltree.yview)
-            ltree.configure(yscrollcommand=vsb.set)
-            vsb.pack(side="left", fill="y")
-            ltree.pack(side="right", fill="both", expand=True)
-
-            for idx_t, tr in enumerate(self.db.get_capital_transactions(), 1):
-                raw_type = tr.get('transaction_type')
-                if raw_type == 'SUPPLIER_REFUND':
-                    tp_ar = "استرداد رصيد مورد (+)"
-                elif raw_type in ('WITHDRAWAL', 'WITHDRAW'):
-                    tp_ar = "سحب سيولة (-)"
-                else:
-                    tp_ar = "إيداع سيولة (+)"
-                row_tag = 'evenrow' if idx_t % 2 == 0 else 'oddrow'
-                ltree.insert("", "end", tags=(row_tag,), values=(
-                    fix_bidi(tr.get('notes') or "-"),
-                    fmt_curr(tr.get('amount')),
-                    fix_bidi(tp_ar),
-                    fix_bidi(tr.get('created_by_name') or "-"),
-                    tr.get('date_formatted') or "-",
-                    idx_t
-                ))
+        for idx_t, tr in enumerate(self.db.get_capital_transactions(), 1):
+            raw_type = tr.get('transaction_type')
+            if raw_type == 'SUPPLIER_REFUND':
+                tp_ar = "استرداد رصيد مورد (+)"
+            elif raw_type in ('WITHDRAWAL', 'WITHDRAW'):
+                tp_ar = "سحب سيولة (-)"
+            else:
+                tp_ar = "إيداع سيولة (+)"
+            row_tag = 'evenrow' if idx_t % 2 == 0 else 'oddrow'
+            ltree.insert("", "end", tags=(row_tag,), values=(
+                fix_bidi(tr.get('notes') or "-"),
+                fmt_curr(tr.get('amount')),
+                fix_bidi(tp_ar),
+                fix_bidi(tr.get('created_by_name') or "-"),
+                tr.get('date_formatted') or "-",
+                idx_t
+            ))
 
     def _render_profits_and_sales_tab(self, parent_frame):
         fin = self.db.get_financial_summary()
@@ -6240,7 +6909,7 @@ class MasterMobileApp(tk.Tk):
 
             self.after(50, lambda: stree.xview_moveto(1.0))
 
-        ent_q.bind("<KeyRelease>", load_sales_data)
+        ent_q.bind("<KeyRelease>", lambda e: self.debounce("sales_search", load_sales_data, 250))
         rep_search_type_cb.bind("<<ComboboxSelected>>", load_sales_data)
         load_sales_data()
 
@@ -6502,7 +7171,7 @@ class MasterMobileApp(tk.Tk):
         btn_clear_dates.config(command=clear_audit_dates)
         btn_refresh.config(command=refresh_logs)
 
-        search_ent.bind("<KeyRelease>", refresh_logs)
+        search_ent.bind("<KeyRelease>", lambda e: self.debounce("audit_search", refresh_logs, 250))
         action_filter_cb.bind("<<ComboboxSelected>>", refresh_logs)
         refresh_logs()
 

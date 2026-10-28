@@ -5,6 +5,8 @@
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2 import pool
+from contextlib import contextmanager
 import bcrypt
 import json
 import os
@@ -67,13 +69,54 @@ def _json_serial_default(obj):
 class DatabaseManager:
     def __init__(self):
         self.conn_params = load_db_config()
+        self.pool = None
+        self._init_pool()
         self.ensure_tables_exist()
 
-    def get_connection(self):
+    def _init_pool(self):
         try:
-            return psycopg2.connect(**self.conn_params, cursor_factory=RealDictCursor)
+            self.pool = pool.ThreadedConnectionPool(minconn=1, maxconn=20, cursor_factory=RealDictCursor, **self.conn_params)
         except Exception as e:
-            raise Exception(f"فشل الاتصال بقاعدة البيانات: {e}")
+            print(f"Notice: Connection pool initialization fallback: {e}")
+            self.pool = None
+
+    @contextmanager
+    def get_connection(self):
+        conn = None
+        is_from_pool = False
+        try:
+            if self.pool and not self.pool.closed:
+                try:
+                    conn = self.pool.getconn()
+                    is_from_pool = True
+                except Exception:
+                    conn = psycopg2.connect(**self.conn_params, cursor_factory=RealDictCursor)
+            else:
+                conn = psycopg2.connect(**self.conn_params, cursor_factory=RealDictCursor)
+
+            conn.cursor_factory = RealDictCursor
+            yield conn
+            if conn and not conn.closed:
+                conn.commit()
+        except Exception as e:
+            if conn and not conn.closed:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise e
+        finally:
+            if conn:
+                if is_from_pool and self.pool and not self.pool.closed:
+                    try:
+                        self.pool.putconn(conn)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
     def ensure_tables_exist(self):
         try:
@@ -274,11 +317,94 @@ class DatabaseManager:
                     cur.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS old_values JSONB DEFAULT '{}'::jsonb;")
                     cur.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS new_values JSONB DEFAULT '{}'::jsonb;")
 
+                    
+                    # 10. جدول المعاملات المالية العامة وتكامل الأصول
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS general_financial_transactions (
+                            id SERIAL PRIMARY KEY,
+                            trans_type VARCHAR(50) NOT NULL,
+                            is_asset BOOLEAN NOT NULL DEFAULT FALSE,
+                            recipient VARCHAR(255) NOT NULL,
+                            category VARCHAR(255) NOT NULL,
+                            amount NUMERIC(14, 2) NOT NULL,
+                            paid_back_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+                            remaining_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+                            status VARCHAR(50) NOT NULL DEFAULT 'OPEN',
+                            payment_method VARCHAR(100) DEFAULT 'كاش',
+                            notes TEXT,
+                            user_id INT REFERENCES users(id),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                    cur.execute("ALTER TABLE general_financial_transactions ADD COLUMN IF NOT EXISTS trans_type VARCHAR(50) NOT NULL DEFAULT 'OPERATIONAL_EXP';")
+                    cur.execute("ALTER TABLE general_financial_transactions ADD COLUMN IF NOT EXISTS is_asset BOOLEAN NOT NULL DEFAULT FALSE;")
+                    cur.execute("ALTER TABLE general_financial_transactions ADD COLUMN IF NOT EXISTS paid_back_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;")
+                    cur.execute("ALTER TABLE general_financial_transactions ADD COLUMN IF NOT EXISTS remaining_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;")
+                    cur.execute("ALTER TABLE general_financial_transactions ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'OPEN';")
+                    cur.execute("ALTER TABLE general_financial_transactions ADD COLUMN IF NOT EXISTS payment_method VARCHAR(100) DEFAULT 'كاش';")
+                    cur.execute("ALTER TABLE general_financial_transactions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;")
+
+                    # 11. جدول الاقتراحات والقوالب المالية الجاهزة
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS financial_presets (
+                            id SERIAL PRIMARY KEY,
+                            preset_type VARCHAR(50) NOT NULL,
+                            preset_value VARCHAR(255) UNIQUE NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+
+                    # 12. جدول استرداد العهد والسلف والأمانات
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS general_transaction_refunds (
+                            id SERIAL PRIMARY KEY,
+                            transaction_id INT REFERENCES general_financial_transactions(id) ON DELETE CASCADE,
+                            refund_amount NUMERIC(14, 2) NOT NULL,
+                            payment_method VARCHAR(100) DEFAULT 'كاش',
+                            notes TEXT,
+                            user_id INT REFERENCES users(id),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_gen_trans_type ON general_financial_transactions(trans_type);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_gen_trans_status ON general_financial_transactions(status);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_gen_trans_recipient ON general_financial_transactions(recipient);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_gen_trans_date ON general_financial_transactions(created_at);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_gen_refunds_trans ON general_transaction_refunds(transaction_id);")
+
+                    cur.execute("SELECT COUNT(*) as cnt FROM financial_presets;")
+                    if cur.fetchone()['cnt'] == 0:
+                        initial_presets = [
+                            ('RECIPIENT', 'المالك / هشام كيوان'),
+                            ('RECIPIENT', 'المحل / الخزينة الرئيسية'),
+                            ('RECIPIENT', 'مسؤول الصيانة'),
+                            ('RECIPIENT', 'أمين المخزن'),
+                            ('RECIPIENT', 'موظف مبيعات'),
+                            ('CATEGORY', 'إنترنت وهاتف المحل'),
+                            ('CATEGORY', 'أدوات نظافة ومطبوعات'),
+                            ('CATEGORY', 'سلفة راتب موظف'),
+                            ('CATEGORY', 'عهدة صيانة وقطع غيار'),
+                            ('CATEGORY', 'عهدة مشتريات بضاعة'),
+                            ('CATEGORY', 'تحويل بين الخزائن'),
+                            ('CATEGORY', 'أمانة نقدية طرف الغير')
+                        ]
+                        for p_t, p_v in initial_presets:
+                            cur.execute("INSERT INTO financial_presets (preset_type, preset_value) VALUES (%s, %s) ON CONFLICT (preset_value) DO NOTHING;", (p_t, p_v))
+
                     # فهارس للأداء العالي وسرعة البحث
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_devices_imei ON devices(imei_serial);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_devices_inv_id ON devices(invoice_id);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_devices_archived ON devices(is_archived);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_devices_supp_id ON devices(supplier_id);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_supplier_inv_supp ON supplier_invoices(supplier_id);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_supplier_inv_date ON supplier_invoices(invoice_date);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_device_id ON sales(device_id);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(sell_date);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_rem ON sales(remaining_balance);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_payments_sale ON customer_payments(sale_id);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_supplier_payments_inv ON supplier_payments(invoice_id);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action_type);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);")
 
@@ -396,6 +522,16 @@ class DatabaseManager:
                             q += " AND a.action_type IN ('ADD_USER', 'UPDATE_USER_PERMISSIONS')"
                         elif action_type == 'UPDATE_DATE':
                             q += " AND a.action_type = 'UPDATE_DATE'"
+                        elif action_type in ('GENERAL_TRANSACTION', 'GENERAL_TRANSACTIONS'):
+                            q += " AND a.action_type IN ('GENERAL_TRANSACTION_CREATE', 'GENERAL_TRANSACTION_REFUND')"
+                        elif action_type == 'GENERAL_TRANSACTION_CREATE':
+                            q += " AND a.action_type = 'GENERAL_TRANSACTION_CREATE'"
+                        elif action_type == 'GENERAL_TRANSACTION_REFUND':
+                            q += " AND a.action_type = 'GENERAL_TRANSACTION_REFUND'"
+                        elif action_type == 'SUPPLIER_DEBIT_OFFSET':
+                            q += " AND a.action_type = 'SUPPLIER_DEBIT_OFFSET'"
+                        elif action_type == 'DEVICE_RETURN_TO_SUPPLIER':
+                            q += " AND a.action_type IN ('DEVICE_RETURN_TO_SUPPLIER', 'DELETE_DEVICE')"
                         else:
                             q += " AND a.action_type = %s"
                             params.append(action_type)
@@ -745,11 +881,50 @@ class DatabaseManager:
                     if dup:
                         raise Exception(f"السيريال ({clean_imei}) مسجل بالفعل بالمخزون للجهاز #{dup['id']} ({dup['model']})!")
 
+                # فحص رصيد المورد الدائن واستهلاكه تلقائياً
+                cur.execute("""
+                    SELECT id, supplier_credit 
+                    FROM supplier_invoices 
+                    WHERE supplier_id = %s AND supplier_credit > 0 
+                    ORDER BY invoice_date ASC, id ASC 
+                    FOR UPDATE;
+                """, (supplier_id,))
+                credit_invoices = cur.fetchall()
+
+                total_avail_credit = sum(float(ci['supplier_credit'] or 0) for ci in credit_invoices)
+                offset_amount = min(b_price, total_avail_credit)
+
+                # خصم الرصيد المستهلك من فواتير المورد السابقة
+                remaining_offset_to_deduct = offset_amount
+                for ci in credit_invoices:
+                    if remaining_offset_to_deduct <= 0:
+                        break
+                    ci_id = ci['id']
+                    ci_cred = float(ci['supplier_credit'] or 0)
+                    deduct = min(ci_cred, remaining_offset_to_deduct)
+                    new_ci_cred = max(0.0, ci_cred - deduct)
+                    cur.execute("UPDATE supplier_invoices SET supplier_credit = %s WHERE id = %s;", (new_ci_cred, ci_id))
+                    remaining_offset_to_deduct -= deduct
+
+                # القيمة المتبقية المطلوب سدادها بعد خصم رصيد المورد الدائن
+                net_cost_after_offset = max(0.0, b_price - offset_amount)
+
+                # المبلغ النقدي المدفوع من المستخدم يطبق على الصافي بعد الخصم
+                if paid_amount is not None:
+                    user_cash_paid = max(0.0, min(net_cost_after_offset, float(paid_amount)))
+                else:
+                    user_cash_paid = net_cost_after_offset
+
+                total_paid_for_invoice = offset_amount + user_cash_paid
+                rem_now = max(0.0, b_price - total_paid_for_invoice)
+
                 c_date = custom_date.strip() if (custom_date and str(custom_date).strip()) else None
                 inv_date_target = c_date.split()[0] if c_date else datetime.now().strftime("%Y-%m-%d")
 
                 inv_status = 'PAID' if rem_now <= 0 else 'UNPAID'
                 inv_notes = f"فاتورة شراء مستقلة للجهاز: {category} {model} (سيريال: {clean_imei})"
+                if offset_amount > 0:
+                    inv_notes += f" [تم الخصم تلقائياً من رصيد ديننا القديم لدى المورد بمبلغ {offset_amount:,.2f} ج.م]"
                 if notes and str(notes).strip():
                     inv_notes += f" - ملاحظات: {notes.strip()}"
 
@@ -757,21 +932,36 @@ class DatabaseManager:
                     INSERT INTO supplier_invoices (supplier_id, total_amount, paid_amount, remaining_amount, supplier_credit, status, invoice_date, created_by_user_id, notes)
                     VALUES (%s, %s, %s, %s, 0.00, %s, %s::date, %s, %s)
                     RETURNING id;
-                """, (supplier_id, b_price, paid_now, rem_now, inv_status, inv_date_target, _clean_int_id(user_id), inv_notes))
+                """, (supplier_id, b_price, total_paid_for_invoice, rem_now, inv_status, inv_date_target, _clean_int_id(user_id), inv_notes))
                 inv_id = cur.fetchone()['id']
 
-                if paid_now > 0:
-                    pay_notes = f"دفعة فورية عند شراء {category} {model} (فاتورة مستقلة #{inv_id})"
+                # تسجيل دفعة الخصم الدائن
+                if offset_amount > 0:
+                    offset_pay_note = f"خصم تلقائي من رصيد ديننا القديم لدى المورد بمبلغ {offset_amount:,.2f} ج.م لسداد تكلفة جهاز #{category} {model}"
                     if c_date:
                         cur.execute("""
                             INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id, payment_date)
                             VALUES (%s, %s, %s, %s, %s, %s::timestamp);
-                        """, (inv_id, supplier_id, paid_now, pay_notes, _clean_int_id(user_id), c_date))
+                        """, (inv_id, supplier_id, offset_amount, offset_pay_note, _clean_int_id(user_id), c_date))
                     else:
                         cur.execute("""
                             INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id)
                             VALUES (%s, %s, %s, %s, %s);
-                        """, (inv_id, supplier_id, paid_now, pay_notes, _clean_int_id(user_id)))
+                        """, (inv_id, supplier_id, offset_amount, offset_pay_note, _clean_int_id(user_id)))
+
+                # تسجيل الدفعة النقدية المسددة إن وجدت
+                if user_cash_paid > 0:
+                    pay_notes = f"دفعة نقدية عند شراء {category} {model} (فاتورة مستقلة #{inv_id})"
+                    if c_date:
+                        cur.execute("""
+                            INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id, payment_date)
+                            VALUES (%s, %s, %s, %s, %s, %s::timestamp);
+                        """, (inv_id, supplier_id, user_cash_paid, pay_notes, _clean_int_id(user_id), c_date))
+                    else:
+                        cur.execute("""
+                            INSERT INTO supplier_payments (invoice_id, supplier_id, payment_amount, notes, created_by_user_id)
+                            VALUES (%s, %s, %s, %s, %s);
+                        """, (inv_id, supplier_id, user_cash_paid, pay_notes, _clean_int_id(user_id)))
 
                 if c_date:
                     cur.execute("""
@@ -797,17 +987,37 @@ class DatabaseManager:
 
                 conn.commit()
 
+        if offset_amount > 0:
+            self.add_audit_log(
+                user_id=user_id,
+                user_name=None,
+                action_type="SUPPLIER_DEBIT_OFFSET",
+                entity_type="SUPPLIER",
+                entity_id=supplier_id,
+                description=f"خصم تلقائي لرصيد مورد دائن بقيمة {offset_amount:,.2f} ج.م لسداد تكلفة شراء الجهاز #{device_id} ({category} {model}) من المورد #{supplier_id}",
+                old_values={"available_credit": total_avail_credit},
+                new_values={"offset_amount": offset_amount, "new_credit": total_avail_credit - offset_amount, "device_id": device_id, "invoice_id": inv_id}
+            )
+
         self.add_audit_log(
             user_id=user_id,
             user_name=None,
             action_type="ADD_DEVICE",
             entity_type="DEVICE",
             entity_id=device_id,
-            description=f"إضافة وشراء جهاز للمخزون #{device_id} ({category} {model}) بسعر شراء {b_price:,.2f} ج.م وسعر بيع مبدئي {init_sp_val:,.2f} ج.م (لون: {color_val}) - فاتورة مورد مستقلة #{inv_id}",
+            description=f"إضافة وشراء جهاز للمخزون #{device_id} ({category} {model}) بسعر شراء {b_price:,.2f} ج.م وسعر بيع مبدئي {init_sp_val:,.2f} ج.م (لون: {color_val}) - فاتورة مورد مستقلة #{inv_id}" + (f" [تم خصم {offset_amount:,.2f} ج.م من رصيد المورد الدائن]" if offset_amount > 0 else ""),
             old_values=None,
-            new_values={"category": category, "model": model, "storage": storage, "ram": ram_val, "battery": bat_val, "imei": clean_imei, "buy_price": b_price, "initial_selling_price": init_sp_val, "supplier_id": supplier_id, "invoice_id": inv_id, "paid_now": paid_now, "remaining_debt": rem_now, "color": color_val, "has_tax": tax_val, "notes": notes}
+            new_values={"category": category, "model": model, "storage": storage, "ram": ram_val, "battery": bat_val, "imei": clean_imei, "buy_price": b_price, "initial_selling_price": init_sp_val, "supplier_id": supplier_id, "invoice_id": inv_id, "offset_amount": offset_amount, "paid_now": total_paid_for_invoice, "remaining_debt": rem_now, "color": color_val, "has_tax": tax_val, "notes": notes}
         )
-        return device_id
+        return {
+            'device_id': device_id,
+            'invoice_id': inv_id,
+            'buy_price': b_price,
+            'offset_amount': offset_amount,
+            'cash_paid': user_cash_paid,
+            'total_paid': total_paid_for_invoice,
+            'remaining_debt': rem_now
+        }
 
     # =========================================================================
     # تعديل الجهاز مع تحديث فاتورته المستقلة تلقائياً والحفاظ التام على المورد والتواريخ
@@ -1500,14 +1710,14 @@ class DatabaseManager:
                 conn.commit()
 
         action_type_desc = (
-            f"حذف جهاز مع استرداد نقدي فوري للخزينة بقيمة {excess_paid:,.2f} ج.م" if refund_mode == "CASH_REFUND" and excess_paid > 0
-            else f"حذف جهاز مع ترحيل رصيد دائن للمورد بقيمة {excess_paid:,.2f} ج.م" if refund_mode == "SUPPLIER_CREDIT" and excess_paid > 0
-            else f"حذف جهاز وخصم تكلفته من مديونية المورد" + (f" مع حفظ فائض {excess_paid:,.2f} ج.م كرصيد دائن" if excess_paid > 0 else "")
+            f"مرتجع للمورد مع استرداد نقدي فوري للخزينة بقيمة {excess_paid:,.2f} ج.م" if refund_mode == "CASH_REFUND" and excess_paid > 0
+            else f"مرتجع للمورد مع ترحيل رصيد دائن للمورد بقيمة {excess_paid:,.2f} ج.م" if refund_mode == "SUPPLIER_CREDIT" and excess_paid > 0
+            else f"مرتجع جهاز للمورد وخصم تكلفته من مديونية المورد" + (f" مع حفظ فائض {excess_paid:,.2f} ج.م كرصيد دائن" if excess_paid > 0 else "")
         )
         self.add_audit_log(
             user_id=user_id,
             user_name=None,
-            action_type="DELETE_DEVICE",
+            action_type="DEVICE_RETURN_TO_SUPPLIER",
             entity_type="DEVICE",
             entity_id=dev_id,
             description=f"{action_type_desc} #{dev_id} ({dev.get('category')} {dev.get('model')})",
@@ -2079,22 +2289,33 @@ class DatabaseManager:
                                TO_CHAR(i.invoice_date, 'YYYY-MM-DD') as inv_date,
                                TO_CHAR(i.invoice_date, 'YYYY-MM-DD') as invoice_date,
                                TO_CHAR(i.invoice_date, 'YYYY-MM-DD') as date_formatted,
-                               (SELECT COUNT(*) FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE) as devices_count,
-                               (SELECT d.is_archived FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as is_device_archived,
-                               (SELECT d.id FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as device_id,
-                               (SELECT d.category || ' ' || d.model FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as device_name,
-                               (SELECT d.imei_serial FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE LIMIT 1) as device_imei,
+                               COALESCE(d_agg.devices_count, 0) as devices_count,
+                               d_agg.is_device_archived,
+                               d_agg.device_id,
+                               d_agg.device_name,
+                               d_agg.device_imei,
                                i.total_amount, i.paid_amount, i.remaining_amount,
                                COALESCE(i.supplier_credit, 0.00) as supplier_credit,
                                i.status,
                                COALESCE(i.notes, '') as notes
                         FROM supplier_invoices i
                         LEFT JOIN suppliers s ON i.supplier_id = s.id
+                        LEFT JOIN (
+                            SELECT d.invoice_id,
+                                   COUNT(*) as devices_count,
+                                   BOOL_OR(COALESCE(d.is_archived, FALSE)) as is_device_archived,
+                                   MAX(d.id) as device_id,
+                                   MAX(d.category || ' ' || d.model) as device_name,
+                                   MAX(d.imei_serial) as device_imei
+                            FROM devices d
+                            WHERE COALESCE(d.is_deleted, FALSE) = FALSE
+                            GROUP BY d.invoice_id
+                        ) d_agg ON d_agg.invoice_id = i.id
                         WHERE (
                             i.total_amount > 0 
                             OR COALESCE(i.supplier_credit, 0.00) > 0 
                             OR COALESCE(i.paid_amount, 0.00) > 0 
-                            OR EXISTS (SELECT 1 FROM devices d WHERE d.invoice_id = i.id AND COALESCE(d.is_deleted, FALSE) = FALSE)
+                            OR COALESCE(d_agg.devices_count, 0) > 0
                             OR EXISTS (SELECT 1 FROM supplier_payments sp WHERE sp.invoice_id = i.id)
                         )
                     """
@@ -2487,9 +2708,43 @@ class DatabaseManager:
                     """)
                     tot_profit = float(cur.fetchone()['tot_profit'])
 
+                    # مستحقات العهد والسلف والأمانات القائمة غير المستردة (بند الأصول القائمة)
+                    cur.execute("""
+                        SELECT COALESCE(SUM(remaining_amount), 0) as gen_assets
+                        FROM general_financial_transactions
+                        WHERE is_asset = TRUE AND status != 'FULLY_REFUNDED';
+                    """)
+                    total_general_assets = float(cur.fetchone()['gen_assets'])
+
+                    # إجمالي المبالغ المنصرفة في المعاملات المالية العامة
+                    cur.execute("SELECT COALESCE(SUM(amount), 0) as gen_disbursed FROM general_financial_transactions;")
+                    total_gen_disbursed = float(cur.fetchone()['gen_disbursed'])
+
+                    # إجمالي المبالغ المستردة نقداً من العهد والسلف
+                    cur.execute("SELECT COALESCE(SUM(refund_amount), 0) as gen_refunded FROM general_transaction_refunds;")
+                    total_gen_refunded = float(cur.fetchone()['gen_refunded'])
+
+                    # المصروفات التشغيلية للشهر الحالي
+                    cur.execute("""
+                        SELECT COALESCE(SUM(amount), 0) as m_exp
+                        FROM general_financial_transactions
+                        WHERE is_asset = FALSE AND TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(CURRENT_DATE, 'YYYY-MM');
+                    """)
+                    month_operational_expenses = float(cur.fetchone()['m_exp'])
+
+                    # إجمالي المصروفات التشغيلية الكلية
+                    cur.execute("""
+                        SELECT COALESCE(SUM(amount), 0) as tot_exp
+                        FROM general_financial_transactions
+                        WHERE is_asset = FALSE;
+                    """)
+                    total_operational_expenses = float(cur.fetchone()['tot_exp'])
+
                     net_injections = injections - withdrawals
-                    current_liquidity = (net_injections + total_sales_cash) - supp_payments
-                    total_capital = (current_liquidity + inv_cost + cust_debts + supp_credit) - supp_debts
+                    current_liquidity = (net_injections + total_sales_cash + total_gen_refunded) - (supp_payments + total_gen_disbursed)
+                    total_capital = (current_liquidity + inv_cost + cust_debts + supp_credit + total_general_assets) - supp_debts
+                    net_monthly_profit = max(0.0, m_profit - month_operational_expenses)
+                    net_total_profit = max(0.0, tot_profit - total_operational_expenses)
 
                     return {
                         'inventory_cost': inv_cost,
@@ -2502,12 +2757,19 @@ class DatabaseManager:
                         'total_supplier_debts': supp_debts,
                         'supplier_credit': supp_credit,
                         'total_supplier_credit': supp_credit,
+                        'general_assets': total_general_assets,
+                        'total_general_assets': total_general_assets,
+                        'total_general_disbursed': total_gen_disbursed,
+                        'total_general_refunded': total_gen_refunded,
+                        'monthly_operational_expenses': month_operational_expenses,
+                        'total_operational_expenses': total_operational_expenses,
                         'current_liquidity': current_liquidity,
                         'available_liquidity': current_liquidity,
                         'total_capital': total_capital,
-                        'monthly_profit': m_profit,
-                        'current_month_profit': m_profit,
-                        'total_profit': tot_profit,
+                        'monthly_profit': net_monthly_profit,
+                        'current_month_profit': net_monthly_profit,
+                        'gross_monthly_profit': m_profit,
+                        'total_profit': net_total_profit,
                         'total_injections': net_injections
                     }
         except Exception as e:
@@ -2903,3 +3165,281 @@ class DatabaseManager:
                 }
 
         return None
+
+    # =========================================================================
+    # المعاملات المالية العامة وتكامل الأصول ورأس المال
+    # =========================================================================
+    def get_financial_presets(self, preset_type=None):
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    if preset_type:
+                        cur.execute("""
+                            SELECT preset_value 
+                            FROM financial_presets 
+                            WHERE preset_type = %s 
+                            ORDER BY id ASC;
+                        """, (preset_type,))
+                    else:
+                        cur.execute("""
+                            SELECT preset_type, preset_value 
+                            FROM financial_presets 
+                            ORDER BY id ASC;
+                        """)
+                    rows = cur.fetchall()
+                    if preset_type:
+                        return [r['preset_value'] for r in rows]
+                    return rows
+        except Exception as ex:
+            print(f"get_financial_presets error: {ex}")
+            return []
+
+    def save_financial_preset(self, preset_type, preset_value):
+        clean_v = str(preset_value or '').strip()
+        if not clean_v:
+            return
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO financial_presets (preset_type, preset_value)
+                        VALUES (%s, %s)
+                        ON CONFLICT (preset_value) DO NOTHING;
+                    """, (preset_type, clean_v))
+                    conn.commit()
+        except Exception as ex:
+            print(f"save_financial_preset error: {ex}")
+
+    def add_general_transaction(self, trans_type, recipient, category, amount, payment_method='كاش', notes='', user_id=None, custom_date=None):
+        rec_clean = str(recipient or '').strip()
+        cat_clean = str(category or '').strip()
+        if not rec_clean or not cat_clean:
+            raise Exception("يجب تحديد المستلم والبيان / الغرض بشكل صحيح!")
+
+        try:
+            amt = float(amount or 0)
+        except ValueError:
+            amt = 0.0
+
+        if amt <= 0:
+            raise Exception("يرجى إدخال مبلغ صحيح أكبر من الصفر!")
+
+        t_type = str(trans_type or 'OPERATIONAL_EXP').upper()
+        # تصنيف الأصول: العهد والسلف والتحويلات والأمانات تُعد أصلاً ومستحقاً قائماً
+        is_asset = t_type in ('CUSTODY', 'ADVANCE', 'TRANSFER', 'SECURITY_DEPOSIT', 'DEPOSIT')
+        rem_amount = amt if is_asset else 0.00
+        pay_method = str(payment_method or 'كاش').strip() or 'كاش'
+        c_date = custom_date.strip() if (custom_date and str(custom_date).strip()) else None
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                if c_date:
+                    cur.execute("""
+                        INSERT INTO general_financial_transactions (
+                            trans_type, is_asset, recipient, category, amount,
+                            paid_back_amount, remaining_amount, status,
+                            payment_method, notes, user_id, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, 0.00, %s, 'OPEN', %s, %s, %s, %s::timestamp, %s::timestamp)
+                        RETURNING id;
+                    """, (t_type, is_asset, rec_clean, cat_clean, amt, rem_amount, pay_method, notes or '', _clean_int_id(user_id), c_date, c_date))
+                else:
+                    cur.execute("""
+                        INSERT INTO general_financial_transactions (
+                            trans_type, is_asset, recipient, category, amount,
+                            paid_back_amount, remaining_amount, status,
+                            payment_method, notes, user_id
+                        )
+                        VALUES (%s, %s, %s, %s, %s, 0.00, %s, 'OPEN', %s, %s, %s)
+                        RETURNING id;
+                    """, (t_type, is_asset, rec_clean, cat_clean, amt, rem_amount, pay_method, notes or '', _clean_int_id(user_id)))
+
+                tx_id = cur.fetchone()['id']
+                conn.commit()
+
+        # حفظ القوالب تلقائياً لسرعة الإكمال التلقائي في المرات القادمة
+        self.save_financial_preset('RECIPIENT', rec_clean)
+        self.save_financial_preset('CATEGORY', cat_clean)
+
+        trans_type_names = {
+            'CUSTODY': 'عهدة لقسم أو شخص',
+            'ADVANCE': 'سلفة موظف',
+            'TRANSFER': 'تحويل بين الخزائن',
+            'SECURITY_DEPOSIT': 'أمانة معلقة طرف الغير',
+            'DEPOSIT': 'أمانة معلقة',
+            'OPERATIONAL_EXP': 'مصروف تشغيلي نهائي'
+        }
+        ar_type = trans_type_names.get(t_type, t_type)
+
+        self.add_audit_log(
+            user_id=user_id,
+            user_name=None,
+            action_type="GENERAL_TRANSACTION_CREATE",
+            entity_type="GENERAL_TRANSACTION",
+            entity_id=tx_id,
+            description=f"تسجيل معاملة مالية عامة ({ar_type}) بمبلغ {amt:,.2f} ج.م [طريقة الدفع: {pay_method}] - المستلم: {rec_clean} - البيان: {cat_clean}" + (f" [تاريخ: {c_date}]" if c_date else ""),
+            old_values=None,
+            new_values={
+                'trans_type': t_type,
+                'is_asset': is_asset,
+                'recipient': rec_clean,
+                'category': cat_clean,
+                'amount': amt,
+                'payment_method': pay_method,
+                'notes': notes,
+                'remaining_amount': rem_amount
+            }
+        )
+        return tx_id
+
+    def refund_general_transaction(self, transaction_id, refund_amount, payment_method='كاش', notes='', user_id=None, custom_date=None):
+        tx_id = _clean_int_id(transaction_id)
+        if not tx_id:
+            raise Exception("رقم المعاملة غير صالح!")
+
+        try:
+            ref_amt = float(refund_amount or 0)
+        except ValueError:
+            ref_amt = 0.0
+
+        if ref_amt <= 0:
+            raise Exception("يرجى إدخال مبلغ استرداد صحيح أكبر من الصفر!")
+
+        pay_method = str(payment_method or 'كاش').strip() or 'كاش'
+        c_date = custom_date.strip() if (custom_date and str(custom_date).strip()) else None
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT * FROM general_financial_transactions 
+                    WHERE id = %s 
+                    FOR UPDATE;
+                """, (tx_id,))
+                tx = cur.fetchone()
+                if not tx:
+                    raise Exception("المعاملة المالية غير موجودة!")
+
+                if not tx.get('is_asset'):
+                    raise Exception("هذه المعاملة تم تسجيلها كمصروف نهائي مستهلك ولا تقبل الاسترداد!")
+
+                rem = float(tx.get('remaining_amount') or 0)
+                if rem <= 0.01:
+                    raise Exception("تم استرداد كامل مبلغ هذه العهدة / السلفة مسبقاً!")
+
+                if ref_amt > (rem + 0.01):
+                    raise Exception(f"مبلغ الاسترداد المطلوب ({ref_amt:,.2f} ج.م) أكبر من المتبقي القائم ({rem:,.2f} ج.م)!")
+
+                curr_paid_back = float(tx.get('paid_back_amount') or 0)
+                tot_amount = float(tx.get('amount') or 0)
+                new_paid_back = curr_paid_back + ref_amt
+                new_rem = max(0.0, tot_amount - new_paid_back)
+                new_status = 'FULLY_REFUNDED' if new_rem <= 0.01 else 'PARTIALLY_REFUNDED'
+
+                cur.execute("""
+                    UPDATE general_financial_transactions
+                    SET paid_back_amount = %s, remaining_amount = %s, status = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s;
+                """, (new_paid_back, new_rem, new_status, tx_id))
+
+                if c_date:
+                    cur.execute("""
+                        INSERT INTO general_transaction_refunds (
+                            transaction_id, refund_amount, payment_method, notes, user_id, created_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s::timestamp)
+                        RETURNING id;
+                    """, (tx_id, ref_amt, pay_method, notes or '', _clean_int_id(user_id), c_date))
+                else:
+                    cur.execute("""
+                        INSERT INTO general_transaction_refunds (
+                            transaction_id, refund_amount, payment_method, notes, user_id
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING id;
+                    """, (tx_id, ref_amt, pay_method, notes or '', _clean_int_id(user_id)))
+
+                rf_id = cur.fetchone()['id']
+                conn.commit()
+
+        self.add_audit_log(
+            user_id=user_id,
+            user_name=None,
+            action_type="GENERAL_TRANSACTION_REFUND",
+            entity_type="GENERAL_TRANSACTION",
+            entity_id=tx_id,
+            description=f"استرداد مبلغ {ref_amt:,.2f} ج.م نقداً من المعاملة #{tx_id} [المستلم: {tx.get('recipient')} - الغرض: {tx.get('category')}] (طريقة الاستلام: {pay_method}) - المتبقي: {new_rem:,.2f} ج.م" + (f" [تاريخ: {c_date}]" if c_date else ""),
+            old_values={'remaining_amount': rem, 'paid_back_amount': curr_paid_back, 'status': tx.get('status')},
+            new_values={'refund_id': rf_id, 'refund_amount': ref_amt, 'new_remaining': new_rem, 'new_status': new_status, 'payment_method': pay_method}
+        )
+        return rf_id
+
+    def get_general_transactions(self, trans_type=None, is_asset=None, status=None, search_query=None, date_from=None, date_to=None, limit=500):
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    query = """
+                        SELECT g.*,
+                               TO_CHAR(g.created_at, 'YYYY-MM-DD HH24:MI') as date_formatted,
+                               COALESCE(u.full_name, u.username, 'مستخدم النظام') as user_name,
+                               COALESCE(g.remaining_amount, g.amount - COALESCE(g.paid_back_amount, 0)) as calculated_remaining
+                        FROM general_financial_transactions g
+                        LEFT JOIN users u ON g.user_id = u.id
+                        WHERE 1=1
+                    """
+                    params = []
+
+                    if trans_type and trans_type != 'ALL':
+                        query += " AND g.trans_type = %s"
+                        params.append(trans_type)
+
+                    if is_asset is not None:
+                        query += " AND g.is_asset = %s"
+                        params.append(bool(is_asset))
+
+                    if status and status != 'ALL':
+                        query += " AND g.status = %s"
+                        params.append(status)
+
+                    if date_from and str(date_from).strip():
+                        query += " AND DATE(g.created_at) >= %s::date"
+                        params.append(str(date_from).strip())
+
+                    if date_to and str(date_to).strip():
+                        query += " AND DATE(g.created_at) <= %s::date"
+                        params.append(str(date_to).strip())
+
+                    if search_query and str(search_query).strip():
+                        q = str(search_query).strip()
+                        query += " AND (g.recipient ILIKE %s OR g.category ILIKE %s OR COALESCE(g.notes, '') ILIKE %s OR CAST(g.id AS TEXT) = %s OR COALESCE(u.full_name, '') ILIKE %s)"
+                        params.extend([f"%{q}%", f"%{q}%", f"%{q}%", q.lstrip('#'), f"%{q}%"])
+
+                    query += " ORDER BY g.created_at DESC, g.id DESC LIMIT %s;"
+                    params.append(limit)
+
+                    cur.execute(query, params)
+                    return cur.fetchall()
+        except Exception as ex:
+            print(f"get_general_transactions error: {ex}")
+            return []
+
+    def get_general_transaction_refunds(self, transaction_id):
+        tx_id = _clean_int_id(transaction_id)
+        if not tx_id:
+            return []
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT r.*,
+                               TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') as date_formatted,
+                               COALESCE(u.full_name, u.username, 'مستخدم النظام') as user_name
+                        FROM general_transaction_refunds r
+                        LEFT JOIN users u ON r.user_id = u.id
+                        WHERE r.transaction_id = %s
+                        ORDER BY r.created_at ASC, r.id ASC;
+                    """, (tx_id,))
+                    return cur.fetchall()
+        except Exception as ex:
+            print(f"get_general_transaction_refunds error: {ex}")
+            return []
+

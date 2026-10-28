@@ -1,6 +1,6 @@
 -- =================================================================================
 -- المخطط الكامل والمحدث لقاعدة البيانات (PostgreSQL) - مركز هشام كيوان لإدارة الهواتف
--- الإصدار الثاني المحدث: دعم الفهارس المتقدمة، الأرشفة، والفواتير المستقلة
+-- الإصدار الثالث المحدث: المعاملات المالية العامة والعهد والأصول، الخصم التلقائي للموردين، الأرشفة، والفواتير المستقلة
 -- =================================================================================
 
 CREATE TABLE IF NOT EXISTS users (
@@ -109,6 +109,43 @@ CREATE TABLE IF NOT EXISTS capital_transactions (
     created_by_user_id INT REFERENCES users(id)
 );
 
+-- =================================================================================
+-- جداول المعاملات المالية العامة وتكامل الأصول
+-- =================================================================================
+CREATE TABLE IF NOT EXISTS general_financial_transactions (
+    id SERIAL PRIMARY KEY,
+    trans_type VARCHAR(50) NOT NULL, -- 'CUSTODY', 'ADVANCE', 'TRANSFER', 'OPERATIONAL_EXP', 'SECURITY_DEPOSIT'
+    is_asset BOOLEAN NOT NULL DEFAULT FALSE,
+    recipient VARCHAR(255) NOT NULL,
+    category VARCHAR(255) NOT NULL,
+    amount NUMERIC(14, 2) NOT NULL,
+    paid_back_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    remaining_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    status VARCHAR(50) NOT NULL DEFAULT 'OPEN', -- 'OPEN', 'PARTIALLY_REFUNDED', 'FULLY_REFUNDED'
+    payment_method VARCHAR(100) DEFAULT 'كاش',
+    notes TEXT,
+    user_id INT REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS financial_presets (
+    id SERIAL PRIMARY KEY,
+    preset_type VARCHAR(50) NOT NULL, -- 'RECIPIENT', 'CATEGORY'
+    preset_value VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS general_transaction_refunds (
+    id SERIAL PRIMARY KEY,
+    transaction_id INT REFERENCES general_financial_transactions(id) ON DELETE CASCADE,
+    refund_amount NUMERIC(14, 2) NOT NULL,
+    payment_method VARCHAR(100) DEFAULT 'كاش',
+    notes TEXT,
+    user_id INT REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     id SERIAL PRIMARY KEY,
     user_id INT,
@@ -128,3 +165,8 @@ CREATE INDEX IF NOT EXISTS idx_devices_archived ON devices(is_archived);
 CREATE INDEX IF NOT EXISTS idx_sales_device_id ON sales(device_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action_type);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_gen_trans_type ON general_financial_transactions(trans_type);
+CREATE INDEX IF NOT EXISTS idx_gen_trans_status ON general_financial_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_gen_trans_recipient ON general_financial_transactions(recipient);
+CREATE INDEX IF NOT EXISTS idx_gen_trans_date ON general_financial_transactions(created_at);
+CREATE INDEX IF NOT EXISTS idx_gen_refunds_trans ON general_transaction_refunds(transaction_id);
